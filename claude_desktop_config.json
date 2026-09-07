@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "donatrack": {
+      "command": "java",
+      "args": [
+        "-jar",
+        "C:\\Users\\julia\\Desktop\\TP DDSI\\McpServer\\target\\donatrack-mcp-1.0-SNAPSHOT.jar"
+      ]
+    }
+  }
+}
