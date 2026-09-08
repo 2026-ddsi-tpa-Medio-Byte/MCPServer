@@ -74,6 +74,10 @@ public class DonaTrackApi {
     return pedir(HttpMethod.GET, logistica + path, null);
   }
 
+  public String postLogistica(String path, Object body) {
+    return pedir(HttpMethod.POST, logistica + path, body);
+  }
+
   public String getIncentivos(String path) {
     return pedir(HttpMethod.GET, incentivos + path, null);
   }

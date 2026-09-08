@@ -18,11 +18,20 @@ public class OperacionTools {
 
   private final DonaTrackApi api;
   private final String depositoPorDefecto;
+  private final SesionMcp sesion;
 
+  @org.springframework.beans.factory.annotation.Autowired
   public OperacionTools(
-      DonaTrackApi api, @Value("${donatrack.deposito-default}") String depositoPorDefecto) {
+      DonaTrackApi api,
+      @Value("${donatrack.deposito-default:DEP-UTN-01}") String depositoPorDefecto,
+      SesionMcp sesion) {
     this.api = api;
     this.depositoPorDefecto = depositoPorDefecto;
+    this.sesion = sesion;
+  }
+
+  public OperacionTools(DonaTrackApi api, String depositoPorDefecto) {
+    this(api, depositoPorDefecto, new SesionMcp());
   }
 
   // ── Registrar cosas ────────────────────────────────────────────────────────
@@ -41,12 +50,14 @@ public class OperacionTools {
       @ToolParam(description = "Descripción de la donación en pocas palabras") String descripcion,
       @ToolParam(required = false, description = "Depósito. Si se omite se usa el habitual.")
           String depositoId) {
+    sesion.requerirLogin("registrar una donación");
+    String dId = (donadorId != null && !donadorId.isBlank()) ? donadorId.trim() : sesion.getUsuario();
     String deposito =
         (depositoId == null || depositoId.isBlank()) ? depositoPorDefecto : depositoId.trim();
     return api.postDonaciones(
         "/donaciones",
         DonaTrackApi.cuerpo(
-            "donadorID", donadorId.trim(),
+            "donadorID", dId,
             "depositoID", deposito,
             "descripcion", descripcion,
             "productoID", productoId.trim(),
@@ -68,6 +79,7 @@ public class OperacionTools {
       @ToolParam(description = "Qué se necesita y para qué, en pocas palabras") String descripcion,
       @ToolParam(description = "Urgencia del 1 al 10") int urgencia,
       @ToolParam(description = "EXTRAORDINARIA o RECURRENTE") String tipo) {
+    sesion.requerirAdmin("registrar una necesidad");
     return api.postDonadores(
         "/necesidades",
         DonaTrackApi.cuerpo(
@@ -89,6 +101,7 @@ public class OperacionTools {
   public String registrarQueja(
       @ToolParam(description = "Número de la donación sobre la que se reclama") String donacionId,
       @ToolParam(description = "Qué pasó con esa donación") String descripcion) {
+    sesion.requerirLogin("registrar una queja");
     // La API espera el texto plano entre comillas, no un objeto.
     return api.postDonaciones("/donaciones/" + donacionId.trim() + "/quejas", descripcion);
   }
@@ -107,6 +120,7 @@ public class OperacionTools {
       @ToolParam(description = "Email") String email,
       @ToolParam(description = "Número de documento") String documento,
       @ToolParam(description = "Domicilio") String domicilio) {
+    sesion.requerirAdmin("dar de alta un donador");
     return api.postDonadores(
         "/donadores",
         DonaTrackApi.cuerpo(
@@ -128,6 +142,7 @@ public class OperacionTools {
       @ToolParam(description = "Domicilio") String domicilio,
       @ToolParam(description = "Teléfono") String telefono,
       @ToolParam(description = "Correo de contacto") String correo) {
+    sesion.requerirAdmin("dar de alta una entidad");
     return api.postDonadores(
         "/entidades",
         DonaTrackApi.cuerpo(
@@ -149,6 +164,7 @@ public class OperacionTools {
       @ToolParam(description = "Descripción") String descripcion,
       @ToolParam(description = "Categoría, por ejemplo alimentos o abrigo") String categoria,
       @ToolParam(description = "Número del identificador a usar") String identificadorId) {
+    sesion.requerirAdmin("dar de alta un producto");
     return api.postDonaciones(
         "/productos",
         DonaTrackApi.cuerpo(
@@ -167,6 +183,7 @@ public class OperacionTools {
   public String crearIdentificador(
       @ToolParam(description = "CODIGODEBARRAS o QR") String tipo,
       @ToolParam(description = "Descripción del identificador") String descripcion) {
+    sesion.requerirAdmin("crear un identificador");
     return api.postDonaciones(
         "/identificadores",
         DonaTrackApi.cuerpo("tipo", tipo.toUpperCase().trim(), "descripcion", descripcion));
@@ -186,6 +203,7 @@ public class OperacionTools {
       @ToolParam(description = "Nueva descripción") String descripcion,
       @ToolParam(description = "Nueva urgencia del 1 al 10") int urgencia,
       @ToolParam(description = "EXTRAORDINARIA o RECURRENTE") String tipo) {
+    sesion.requerirAdmin("modificar una necesidad");
     return api.putDonadores(
         "/necesidades/" + necesidadId.trim(),
         DonaTrackApi.cuerpo(
@@ -205,6 +223,7 @@ public class OperacionTools {
       @ToolParam(description = "Domicilio") String domicilio,
       @ToolParam(description = "Teléfono") String telefono,
       @ToolParam(description = "Correo") String correo) {
+    sesion.requerirAdmin("modificar una entidad");
     return api.putDonadores(
         "/entidades/" + entidadId.trim(),
         DonaTrackApi.cuerpo(
@@ -221,6 +240,7 @@ public class OperacionTools {
               + "deshacer.")
   public String eliminarNecesidad(
       @ToolParam(description = "Número de la necesidad a borrar") String necesidadId) {
+    sesion.requerirAdmin("eliminar una necesidad");
     api.deleteDonadores("/necesidades/" + necesidadId.trim());
     return "Necesidad " + necesidadId + " eliminada.";
   }
@@ -234,6 +254,27 @@ public class OperacionTools {
               + "hace un proceso automático, pero se puede forzar.")
   public String procesarDonador(
       @ToolParam(description = "Número del donador a procesar") String donadorId) {
+    sesion.requerirLogin("procesar un donador en incentivos");
     return api.postIncentivos("/donadores/" + donadorId.trim() + "/procesar", null);
+  }
+
+  @Tool(
+      name = "reportar_entrega",
+      description =
+          "Reporta la entrega de un paquete en Logística. Requiere permisos de ADMIN. "
+              + "Al reportar la entrega, la donación pasa a ACEPTADA y se satisface la necesidad.")
+  public String reportarEntrega(
+      @ToolParam(description = "Número o código del paquete entregado") String paqueteId,
+      @ToolParam(description = "Número de la donación asociada") String donacionId,
+      @ToolParam(description = "Número del producto entregado") String productoId,
+      @ToolParam(description = "Cantidad de unidades entregadas") int cantidad) {
+    sesion.requerirAdmin("reportar una entrega");
+    return api.postLogistica(
+        "/api/asignaciones/reportar-entrega",
+        DonaTrackApi.cuerpo(
+            "paqueteid", paqueteId.trim(),
+            "donacionID", donacionId.trim(),
+            "productoid", productoId.trim(),
+            "cantidad", cantidad));
   }
 }

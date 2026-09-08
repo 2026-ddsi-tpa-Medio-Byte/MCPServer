@@ -30,14 +30,21 @@ class ToolsTest {
   private MockRestServiceServer servidor;
   private ConsultaTools consultas;
   private OperacionTools operaciones;
+  private SesionMcp sesion;
+  private AuthTools auth;
+  private SeedTools seed;
 
   @BeforeEach
   void setUp() {
     rest = new RestTemplate();
     servidor = MockRestServiceServer.createServer(rest);
     DonaTrackApi api = new DonaTrackApi(rest, DONACIONES, DONADORES, LOGISTICA, INCENTIVOS);
+    sesion = new SesionMcp();
+    sesion.iniciarComoAdmin("admin");
     consultas = new ConsultaTools(api);
-    operaciones = new OperacionTools(api, "DEP-UTN-01");
+    operaciones = new OperacionTools(api, "DEP-UTN-01", sesion);
+    auth = new AuthTools(sesion, api, "admin123");
+    seed = new SeedTools(api, sesion, "DEP-UTN-01");
   }
 
   // ── Consultas ──────────────────────────────────────────────────────────────
@@ -214,5 +221,51 @@ class ToolsTest {
     assertEquals(2, m.size());
     assertTrue(m.containsKey("a"));
     assertTrue(m.containsKey("c"));
+  }
+
+  // ── Autenticación y Control de Sesión ──────────────────────────────────────
+
+  @Test
+  @DisplayName("Una operación sin sesión iniciada es rechazada")
+  void operacionSinSesionRechazada() {
+    sesion.cerrarSesion();
+    assertThrows(
+        IllegalStateException.class,
+        () -> operaciones.registrarDonacion("1", "3", 10, "Diez kilos de arroz", null));
+  }
+
+  @Test
+  @DisplayName("Iniciar sesión como admin valida credenciales y actualiza sesión")
+  void loginAdmin() {
+    sesion.cerrarSesion();
+    String rErr = auth.iniciarSesion("ADMIN", "admin", "clave_erronea");
+    assertTrue(rErr.contains("incorrecta"));
+    assertTrue(!sesion.estaAutenticado());
+
+    String rOk = auth.iniciarSesion("ADMIN", "admin", "admin123");
+    assertTrue(rOk.contains("ADMINISTRADOR"));
+    assertTrue(sesion.esAdmin());
+    assertTrue(auth.quienSoy().contains("ADMINISTRADOR"));
+
+    auth.cerrarSesion();
+    assertTrue(!sesion.estaAutenticado());
+  }
+
+  @Test
+  @DisplayName("Reportar entrega en Logística arma el cuerpo esperado")
+  void reportarEntrega() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"paqueteid":"PAQ-1","donacionID":"5","productoid":"3","cantidad":10}
+                    """))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.reportarEntrega("PAQ-1", "5", "3", 10);
+    servidor.verify();
   }
 }

@@ -27,9 +27,13 @@ public class McpServerApplication {
 
   /** Registra los métodos anotados con @Tool como herramientas del servidor. */
   @Bean
-  public ToolCallbackProvider herramientas(ConsultaTools consultas, OperacionTools operaciones) {
+  public ToolCallbackProvider herramientas(
+      ConsultaTools consultas,
+      OperacionTools operaciones,
+      AuthTools auth,
+      SeedTools seed) {
     return MethodToolCallbackProvider.builder()
-        .toolObjects(consultas, operaciones)
+        .toolObjects(consultas, operaciones, auth, seed)
         .build();
   }
 
