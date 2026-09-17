@@ -25,6 +25,17 @@ public class DonaTrackApi {
 
   private static final Logger log = LoggerFactory.getLogger(DonaTrackApi.class);
 
+  /**
+   * El header que los módulos leen para agrupar los logs de una misma operación.
+   *
+   * <p>Donaciones y Donadores lo reenvían a quien llamen después, así que alcanza con mandarlo una
+   * vez desde acá para que la operación entera quede atada al mismo identificador en Datadog.
+   */
+  private static final String HEADER_TRAZA = "X-Trace-Id";
+
+  /** Vale por llamada, no por servidor: cada flujo arranca la suya. */
+  private final ThreadLocal<String> traza = new ThreadLocal<>();
+
   private final RestTemplate rest;
   private final String donaciones;
   private final String donadores;
@@ -54,6 +65,14 @@ public class DonaTrackApi {
     return pedir(HttpMethod.POST, donaciones + path, body);
   }
 
+  public String deleteDonaciones(String path) {
+    return pedir(HttpMethod.DELETE, donaciones + path, null);
+  }
+
+  public String patchDonadores(String path, Object body) {
+    return pedir(HttpMethod.PATCH, donadores + path, body);
+  }
+
   public String getDonadores(String path) {
     return pedir(HttpMethod.GET, donadores + path, null);
   }
@@ -78,6 +97,10 @@ public class DonaTrackApi {
     return pedir(HttpMethod.POST, logistica + path, body);
   }
 
+  public String deleteLogistica(String path) {
+    return pedir(HttpMethod.DELETE, logistica + path, null);
+  }
+
   public String getIncentivos(String path) {
     return pedir(HttpMethod.GET, incentivos + path, null);
   }
@@ -86,19 +109,53 @@ public class DonaTrackApi {
     return pedir(HttpMethod.POST, incentivos + path, body);
   }
 
+  // ── Trazabilidad ───────────────────────────────────────────────────────────
+
+  /**
+   * Empieza una traza nueva y devuelve su identificador, para poder mostrarlo.
+   *
+   * <p>Se usa antes de un flujo completo: todas las llamadas que salgan después viajan con el
+   * mismo valor y los módulos lo escriben en cada línea de log.
+   */
+  public String nuevaTraza() {
+    String id = "mcp-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+    traza.set(id);
+    return id;
+  }
+
+  public void cerrarTraza() {
+    traza.remove();
+  }
+
+  /**
+   * Solo agrega la traza. El tipo de contenido lo sigue resolviendo el conversor según el cuerpo:
+   * si acá se fijara a mano, las quejas —que viajan como texto plano— se romperían.
+   */
+  private org.springframework.http.HttpHeaders cabeceras() {
+    org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+    String actual = traza.get();
+    if (actual != null) {
+      headers.set(HEADER_TRAZA, actual);
+    }
+    return headers;
+  }
+
   // ── Llamada ────────────────────────────────────────────────────────────────
 
   private String pedir(HttpMethod metodo, String url, Object body) {
     log.info("{} {}", metodo, url);
     try {
       String resp =
-          rest.exchange(url, metodo, body == null ? null : new HttpEntity<>(body), String.class)
-              .getBody();
+          rest.exchange(url, metodo, new HttpEntity<>(body, cabeceras()), String.class).getBody();
       return resp == null || resp.isBlank() ? "Operación realizada." : resp;
     } catch (HttpStatusCodeException e) {
-      throw new RuntimeException(explicar(e, url));
+      String explicacion = explicar(e, url);
+      if (e.getStatusCode().value() == 404) {
+        throw new NoEncontrado(explicacion);
+      }
+      throw new RuntimeException(explicacion);
     } catch (ResourceAccessException e) {
-      throw new RuntimeException(
+      throw new SinRespuesta(
           "El módulo no responde ("
               + url
               + "). Los servicios de Render se duermen: puede tardar hasta un minuto en "
@@ -137,6 +194,30 @@ public class DonaTrackApi {
     }
     String limpio = cuerpo.replaceAll("[{}\"]", " ").replaceAll("\\s+", " ").trim();
     return limpio.length() > 300 ? limpio.substring(0, 300) + "..." : limpio;
+  }
+
+  /**
+   * Para distinguir «eso no existe» de «el módulo no anda» sin tener que mirar el texto del error.
+   *
+   * <p>La diferencia importa al armar los relatos: que un producto no tenga stock guardado es
+   * información válida, y que Logística no conteste es otra cosa muy distinta.
+   */
+  public static class NoEncontrado extends RuntimeException {
+    public NoEncontrado(String mensaje) {
+      super(mensaje);
+    }
+  }
+
+  /**
+   * El módulo no contestó a tiempo.
+   *
+   * <p>En Render esto casi siempre es un servicio despertando, y el segundo intento funciona. Se
+   * distingue del resto de los errores para poder reintentar solo cuando tiene sentido.
+   */
+  public static class SinRespuesta extends RuntimeException {
+    public SinRespuesta(String mensaje) {
+      super(mensaje);
+    }
   }
 
   /** Para que las tools puedan armar cuerpos sin repetir el mapa en cada una. */

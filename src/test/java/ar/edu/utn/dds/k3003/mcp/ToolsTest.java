@@ -42,7 +42,10 @@ class ToolsTest {
     sesion = new SesionMcp();
     sesion.iniciarComoAdmin("admin");
     consultas = new ConsultaTools(api);
-    operaciones = new OperacionTools(api, "DEP-UTN-01", sesion);
+    // Sin relato: estos tests miran qué se le manda a cada módulo. Con el relato prendido habría
+    // que simular además todas las consultas del antes y el después, y el test dejaría de hablar
+    // de lo que quiere probar. El relato se prueba aparte, en RelatoTest.
+    operaciones = new OperacionTools(api, "DEP-UTN-01", sesion, false);
     auth = new AuthTools(sesion, api, "admin123");
     seed = new SeedTools(api, sesion, "DEP-UTN-01");
   }

@@ -31,9 +31,10 @@ public class McpServerApplication {
       ConsultaTools consultas,
       OperacionTools operaciones,
       AuthTools auth,
-      SeedTools seed) {
+      SeedTools seed,
+      DemoTools demo) {
     return MethodToolCallbackProvider.builder()
-        .toolObjects(consultas, operaciones, auth, seed)
+        .toolObjects(consultas, operaciones, auth, seed, demo)
         .build();
   }
 
