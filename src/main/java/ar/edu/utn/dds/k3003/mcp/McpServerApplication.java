@@ -38,11 +38,20 @@ public class McpServerApplication {
         .build();
   }
 
+  /**
+   * Los tiempos de espera se calculan hacia atrás desde un límite que no es nuestro: Claude corta
+   * cualquier herramienta que tarde más de 60 segundos y la da por fallada, aunque del lado del
+   * servidor haya terminado bien.
+   *
+   * <p>Con 25 segundos de lectura, una consulta con su reintento no pasa de 50, y una operación
+   * no pasa de 35. Alcanza para un servicio de Render que se está despertando: si el primer
+   * intento no llega, el segundo lo encuentra despierto.
+   */
   @Bean
   public RestTemplate restTemplate(RestTemplateBuilder builder) {
     return builder
-        .connectTimeout(java.time.Duration.ofSeconds(30))
-        .readTimeout(java.time.Duration.ofSeconds(90))
+        .connectTimeout(java.time.Duration.ofSeconds(10))
+        .readTimeout(java.time.Duration.ofSeconds(25))
         .build();
   }
 }

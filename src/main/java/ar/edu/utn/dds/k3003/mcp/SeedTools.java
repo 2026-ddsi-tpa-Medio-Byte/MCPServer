@@ -28,8 +28,14 @@ public class SeedTools {
   private static final Logger log = LoggerFactory.getLogger(SeedTools.class);
   private static final ObjectMapper mapper = new ObjectMapper();
 
-  /** Lo que se espera a que despierte cada módulo. Un arranque de Render ronda el minuto. */
-  private static final int ESPERA_MAXIMA_SEGUNDOS = 60;
+  /**
+   * Lo que se espera a que despierten los módulos antes de empezar a escribir.
+   *
+   * <p>Sale de restar hacia atrás: Claude corta la herramienta a los 60 segundos, y después de
+   * despertar todavía quedan ocho escrituras. Si un módulo no contestó en este tiempo, lo más
+   * probable es que no esté dormido sino caído.
+   */
+  private static final int ESPERA_MAXIMA_SEGUNDOS = 30;
 
   private final DonaTrackApi api;
   private final SesionMcp sesion;
@@ -77,8 +83,9 @@ public class SeedTools {
       String donadorId = crearDonador(sb, suf);
       String entidadId = crearEntidad(sb, suf);
       crearDeposito(sb, suf);
-      // Si Incentivos no despertó, escribirle cuesta un minuto y medio por cada intento hasta que
-      // se da por vencido. Mejor avisarlo y seguir: el resto de los flujos no lo necesita.
+      // Si Incentivos no despertó, cada escritura esperaría hasta darse por vencida y la
+      // herramienta pasaría el corte de 60 segundos. Mejor avisarlo y seguir: el resto de los
+      // flujos no lo necesita.
       String[] incentivos =
           despiertos.contains("Incentivos")
               ? crearInsigniaYMision(sb, suf)
@@ -135,8 +142,9 @@ public class SeedTools {
                             log.info("{} dormido o caído al despertar: {}", modulo, e.getMessage());
                             return false;
                           }
-                        })
-                    // Se deja de esperar al minuto, pero el pedido sigue viajando: aunque no se
+                        },
+                        Hilos.ESPERA)
+                    // Se deja de esperar al llegar al plazo, pero el pedido sigue viajando: aunque no se
                     // vea la respuesta, alcanza para que Render arranque el servicio.
                     .completeOnTimeout(
                         false, ESPERA_MAXIMA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS)));

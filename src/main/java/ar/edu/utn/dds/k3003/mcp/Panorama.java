@@ -27,7 +27,7 @@ class Panorama {
   private final DonaTrackApi api;
 
   /** Los módulos que no contestaron, para poder decirlo en vez de mentir que no hubo cambios. */
-  final Set<String> sinRespuesta = new LinkedHashSet<>();
+  final Set<String> sinRespuesta = java.util.Collections.synchronizedSet(new LinkedHashSet<>());
 
   JsonNode donador;
   JsonNode donacion;
@@ -57,9 +57,10 @@ class Panorama {
   /** Para una donación importan el producto, las necesidades que podrían recibirla y el stock. */
   static Panorama deDonacion(DonaTrackApi api, String productoId) {
     Panorama p = new Panorama(api);
-    p.producto = p.leer("Donaciones", () -> api.getDonaciones("/productos/" + productoId));
-    p.necesidadesDelProducto = p.leerLista(productoId);
-    p.stock = p.leerStock(productoId);
+    p.aLaVez(
+        () -> p.producto = p.leer("Donaciones", () -> api.getDonaciones("/productos/" + productoId)),
+        () -> p.necesidadesDelProducto = p.leerLista(productoId),
+        () -> p.stock = p.leerStock(productoId));
     return p;
   }
 
@@ -71,16 +72,23 @@ class Panorama {
    */
   static Panorama deEntrega(DonaTrackApi api, String paqueteId, String donacionId) {
     Panorama p = new Panorama(api);
-    p.leerAsignacion(paqueteId);
-    p.donacion = p.leer("Donaciones", () -> api.getDonaciones("/donaciones/" + donacionId));
+    p.aLaVez(
+        () -> p.leerAsignacion(paqueteId),
+        () -> p.donacion = p.leer("Donaciones", () -> api.getDonaciones("/donaciones/" + donacionId)));
+    // La necesidad sale de la asignación y el producto de la donación: recién ahora se pueden pedir.
     String necesidadId = alguno(p.asignacion, "necesidadID", "necesidadid");
-    if (!necesidadId.isBlank()) {
-      p.necesidad = p.leer("Donadores", () -> api.getDonadores("/necesidades/" + necesidadId));
-    }
     String productoId = texto(p.donacion, "productoID");
-    if (!productoId.isBlank()) {
-      p.stock = p.leerStock(productoId);
-    }
+    p.aLaVez(
+        () -> {
+          if (!necesidadId.isBlank()) {
+            p.necesidad = p.leer("Donadores", () -> api.getDonadores("/necesidades/" + necesidadId));
+          }
+        },
+        () -> {
+          if (!productoId.isBlank()) {
+            p.stock = p.leerStock(productoId);
+          }
+        });
     return p;
   }
 
@@ -90,9 +98,12 @@ class Panorama {
     p.donacion = p.leer("Donaciones", () -> api.getDonaciones("/donaciones/" + donacionId));
     String id = donadorId != null && !donadorId.isBlank() ? donadorId : texto(p.donacion, "donadorID");
     if (!id.isBlank()) {
-      p.donador = p.leer("Donadores", () -> api.getDonadores("/donadores/" + id));
-      p.quejas = p.leer("Donadores", () -> api.getDonadores("/donadores/" + id + "/quejas"));
-      p.insignias = p.leer("Incentivos", () -> api.getIncentivos("/donadores/" + id + "/insignias"));
+      p.aLaVez(
+          () -> p.donador = p.leer("Donadores", () -> api.getDonadores("/donadores/" + id)),
+          () -> p.quejas = p.leer("Donadores", () -> api.getDonadores("/donadores/" + id + "/quejas")),
+          () ->
+              p.insignias =
+                  p.leer("Incentivos", () -> api.getIncentivos("/donadores/" + id + "/insignias")));
     }
     return p;
   }
@@ -100,20 +111,41 @@ class Panorama {
   /** Para una necesidad nueva importa si había stock esperando que alguien lo pida. */
   static Panorama deNecesidad(DonaTrackApi api, String productoId) {
     Panorama p = new Panorama(api);
-    p.stock = p.leerStock(productoId);
-    p.necesidadesDelProducto = p.leerLista(productoId);
+    p.aLaVez(
+        () -> p.stock = p.leerStock(productoId),
+        () -> p.necesidadesDelProducto = p.leerLista(productoId));
     return p;
   }
 
   /** Para el procesamiento en Incentivos importan la categoría, las insignias y la misión. */
   static Panorama deIncentivos(DonaTrackApi api, String donadorId) {
     Panorama p = new Panorama(api);
-    p.donador = p.leer("Donadores", () -> api.getDonadores("/donadores/" + donadorId));
-    p.insignias =
-        p.leer("Incentivos", () -> api.getIncentivos("/donadores/" + donadorId + "/insignias"));
-    p.mision =
-        p.leer("Incentivos", () -> api.getIncentivos("/donadores/" + donadorId + "/mision-actual"));
+    p.aLaVez(
+        () -> p.donador = p.leer("Donadores", () -> api.getDonadores("/donadores/" + donadorId)),
+        () ->
+            p.insignias =
+                p.leer("Incentivos", () -> api.getIncentivos("/donadores/" + donadorId + "/insignias")),
+        () ->
+            p.mision =
+                p.leer(
+                    "Incentivos",
+                    () -> api.getIncentivos("/donadores/" + donadorId + "/mision-actual")));
     return p;
+  }
+
+  /**
+   * Corre lecturas independientes a la vez.
+   *
+   * <p>En serie, un módulo caído suma su espera completa por cada consulta, y el relato de una
+   * operación sobre Incentivos llegaba a rozar el minuto: Claude corta las herramientas a los 60
+   * segundos y las da por falladas aunque hayan terminado bien.
+   */
+  private void aLaVez(Runnable... lecturas) {
+    java.util.concurrent.CompletableFuture.allOf(
+            java.util.Arrays.stream(lecturas)
+                .map(lectura -> java.util.concurrent.CompletableFuture.runAsync(lectura, Hilos.ESPERA))
+                .toArray(java.util.concurrent.CompletableFuture[]::new))
+        .join();
   }
 
   // ── Lectura tolerante a fallas ─────────────────────────────────────────────
@@ -126,7 +158,7 @@ class Panorama {
    * acompaña a una operación que <b>ya ocurrió</b>. Nadie va a esperar tres minutos delante de
    * alguien que está mirando la pantalla, y menos para enterarse de que no se pudo saber nada.
    */
-  private static final int PACIENCIA_SEGUNDOS = 6;
+  private static final int PACIENCIA_SEGUNDOS = 4;
 
   /** El worker de Logística suele tardar un par de segundos en procesar una donación. */
   private static final int INTENTOS_ASIGNACION = 3;
@@ -144,7 +176,7 @@ class Panorama {
 
   /** Espera la consulta, pero no más de lo que dura la atención de quien está mirando. */
   private static String conPaciencia(Supplier<String> consulta) throws Exception {
-    return java.util.concurrent.CompletableFuture.supplyAsync(consulta)
+    return java.util.concurrent.CompletableFuture.supplyAsync(consulta, Hilos.ESPERA)
         .get(PACIENCIA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS);
   }
 
