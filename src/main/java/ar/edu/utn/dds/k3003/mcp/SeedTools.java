@@ -28,6 +28,9 @@ public class SeedTools {
   private static final Logger log = LoggerFactory.getLogger(SeedTools.class);
   private static final ObjectMapper mapper = new ObjectMapper();
 
+  /** Lo que se espera a que despierte cada módulo. Un arranque de Render ronda el minuto. */
+  private static final int ESPERA_MAXIMA_SEGUNDOS = 60;
+
   private final DonaTrackApi api;
   private final SesionMcp sesion;
   private final String depositoPorDefecto;
@@ -64,13 +67,22 @@ public class SeedTools {
     long suf = Instant.now().getEpochSecond();
     StringBuilder sb = new StringBuilder("**Precondiciones cargadas**\n\n");
 
+    // Primero se despiertan los módulos con consultas. Si se arranca escribiendo, el primer POST
+    // se pierde despertando al servicio y no se puede reintentar sin arriesgar un duplicado.
+    java.util.Set<String> despiertos = despertar();
+
     try {
       String identId = crearIdentificador(sb, suf);
       String prodId = crearProducto(sb, suf, identId);
       String donadorId = crearDonador(sb, suf);
       String entidadId = crearEntidad(sb, suf);
       crearDeposito(sb, suf);
-      String[] incentivos = crearInsigniaYMision(sb, suf);
+      // Si Incentivos no despertó, escribirle cuesta un minuto y medio por cada intento hasta que
+      // se da por vencido. Mejor avisarlo y seguir: el resto de los flujos no lo necesita.
+      String[] incentivos =
+          despiertos.contains("Incentivos")
+              ? crearInsigniaYMision(sb, suf)
+              : saltearIncentivos(sb, suf);
       String necesidadId = crearNecesidad(sb, entidadId, prodId);
 
       sb.append("\n**Para usar en los flujos**\n\n")
@@ -93,6 +105,50 @@ public class SeedTools {
       log.error("Error preparando la demostración", e);
       return sb + "\n⚠️ Se cortó acá: " + e.getMessage();
     }
+  }
+
+  /**
+   * Consultas baratas a cada módulo, solo para que estén despiertos cuando haya que escribir.
+   *
+   * <p>En paralelo: si se hicieran una detrás de otra, un módulo caído sumaría su espera completa
+   * al tiempo de preparación.
+   */
+  private java.util.Set<String> despertar() {
+    java.util.Map<String, Runnable> consultas = new java.util.LinkedHashMap<>();
+    consultas.put("Donaciones", () -> api.getDonaciones("/productos"));
+    consultas.put("Donadores", () -> api.getDonadores("/donadores"));
+    consultas.put("Logística", () -> api.getLogistica("/depositos"));
+    consultas.put("Incentivos", () -> api.getIncentivos("/insignias"));
+
+    java.util.Map<String, java.util.concurrent.CompletableFuture<Boolean>> pendientes =
+        new java.util.LinkedHashMap<>();
+    consultas.forEach(
+        (modulo, consulta) ->
+            pendientes.put(
+                modulo,
+                java.util.concurrent.CompletableFuture.supplyAsync(
+                        () -> {
+                          try {
+                            consulta.run();
+                            return true;
+                          } catch (Exception e) {
+                            log.info("{} dormido o caído al despertar: {}", modulo, e.getMessage());
+                            return false;
+                          }
+                        })
+                    // Se deja de esperar al minuto, pero el pedido sigue viajando: aunque no se
+                    // vea la respuesta, alcanza para que Render arranque el servicio.
+                    .completeOnTimeout(
+                        false, ESPERA_MAXIMA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS)));
+
+    java.util.Set<String> despiertos = new java.util.HashSet<>();
+    pendientes.forEach(
+        (modulo, futuro) -> {
+          if (futuro.join()) {
+            despiertos.add(modulo);
+          }
+        });
+    return despiertos;
   }
 
   // ── Precondiciones ─────────────────────────────────────────────────────────
@@ -174,10 +230,16 @@ public class SeedTools {
     } catch (Exception e) {
       sb.append("- **Logística** — ⚠️ no se pudo crear el depósito ")
           .append(depositoPorDefecto)
-          .append(": ")
+          .append(". Si ya existía está bien; si no, las donaciones van a fallar. Detalle: ")
           .append(e.getMessage())
-          .append(". Si ya existía está bien; si no, las donaciones van a fallar.\n");
+          .append("\n");
     }
+  }
+
+  private String[] saltearIncentivos(StringBuilder sb, long suf) {
+    sb.append("- **Incentivos** — ⚠️ no respondió al despertarlo, así que no se le cargó nada. ")
+        .append("El resto de los flujos se puede mostrar igual.\n");
+    return new String[] {"ins-" + suf, "mis-" + suf};
   }
 
   private String[] crearInsigniaYMision(StringBuilder sb, long suf) {
@@ -199,9 +261,10 @@ public class SeedTools {
               "tipo", "COMPLETITUD"));
       sb.append("- **Incentivos** — insignia ").append(insId).append(" y misión ").append(misId).append("\n");
     } catch (Exception e) {
-      sb.append("- **Incentivos** — ⚠️ no respondió: ")
+      sb.append("- **Incentivos** — ⚠️ no respondió, así que el flujo de incentivos no se va a ")
+          .append("poder mostrar. Detalle: ")
           .append(e.getMessage())
-          .append(". El flujo de incentivos no se va a poder mostrar.\n");
+          .append("\n");
     }
     return new String[] {insId, misId};
   }

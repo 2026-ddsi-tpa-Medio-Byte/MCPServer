@@ -61,7 +61,8 @@ public class AuthTools {
       sesion.iniciarComoAdmin(user);
       return "Sesión iniciada con éxito como ADMINISTRADOR ("
           + user
-          + "). Tenés acceso total a operaciones y a la herramienta 'ejecutar_seed'.";
+          + "). Tenés acceso total a las operaciones y a las herramientas de demostración "
+          + "('guion_demo' dice por dónde empezar).";
     } else if ("DONADOR".equals(rolNorm)) {
       if (identificador == null || identificador.isBlank()) {
         return "Para ingresar como DONADOR debés indicar tu número de donador en 'identificador'.";

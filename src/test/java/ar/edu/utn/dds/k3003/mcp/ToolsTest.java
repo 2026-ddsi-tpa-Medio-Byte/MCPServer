@@ -191,27 +191,51 @@ class ToolsTest {
   }
 
   @Test
-  @DisplayName("Si el módulo no responde, se explica que puede estar dormido")
-  void moduloCaido() {
+  @DisplayName("Una consulta a un módulo dormido se reintenta sola una vez")
+  void consultaAModuloDormidoSeReintenta() {
+    java.util.concurrent.atomic.AtomicInteger intentos =
+        new java.util.concurrent.atomic.AtomicInteger();
+    DonaTrackApi api = new DonaTrackApi(sinSalida(intentos), DONACIONES, DONADORES, LOGISTICA, INCENTIVOS);
+
+    RuntimeException e =
+        assertThrows(RuntimeException.class, () -> new ConsultaTools(api).consultarProductos(null));
+
+    assertEquals(2, intentos.get(), "en Render el primer pedido se pierde despertando al servicio");
+    assertTrue(e.getMessage().contains("no responde"));
+    assertTrue(
+        e.getMessage().contains("despertar_servicios"),
+        "conviene decir con qué herramienta se resuelve");
+  }
+
+  @Test
+  @DisplayName("Una operación que escribe no se reintenta: podría duplicarse")
+  void operacionNoSeReintenta() {
+    java.util.concurrent.atomic.AtomicInteger intentos =
+        new java.util.concurrent.atomic.AtomicInteger();
+    DonaTrackApi api = new DonaTrackApi(sinSalida(intentos), DONACIONES, DONADORES, LOGISTICA, INCENTIVOS);
+
+    assertThrows(
+        RuntimeException.class,
+        () -> new OperacionTools(api, "DEP-UTN-01", sesion, false)
+            .registrarDonacion("1", "3", 10, "algo", null));
+
+    assertEquals(
+        1, intentos.get(), "sin respuesta no se sabe si la donación llegó: repetirla la duplicaría");
+  }
+
+  /** Un RestTemplate que nunca llega a destino, contando cuántas veces se intentó. */
+  private RestTemplate sinSalida(java.util.concurrent.atomic.AtomicInteger intentos) {
     RestTemplate sinSalida = new RestTemplate();
     sinSalida.setRequestFactory(
         new org.springframework.http.client.SimpleClientHttpRequestFactory() {
           @Override
           public org.springframework.http.client.ClientHttpRequest createRequest(
               java.net.URI uri, HttpMethod httpMethod) throws java.io.IOException {
+            intentos.incrementAndGet();
             throw new java.io.IOException("conexión rechazada");
           }
         });
-    DonaTrackApi api =
-        new DonaTrackApi(sinSalida, DONACIONES, DONADORES, LOGISTICA, INCENTIVOS);
-
-    RuntimeException e =
-        assertThrows(RuntimeException.class, () -> new ConsultaTools(api).consultarProductos(null));
-
-    assertTrue(e.getMessage().contains("no responde"));
-    assertTrue(
-        e.getMessage().contains("reintentar"),
-        "conviene sugerir el reintento: en Render es lo que suele resolverlo");
+    return sinSalida;
   }
 
   // ── Cuerpo ─────────────────────────────────────────────────────────────────

@@ -23,12 +23,67 @@ public class DemoTools {
   /** Cuántos productos se recorren para contar necesidades: hay una consulta por producto. */
   private static final int PRODUCTOS_A_RECORRER = 10;
 
+  /** Lo que se espera por cada consulta del resumen antes de darla por perdida. */
+  private static final int PACIENCIA_SEGUNDOS = 6;
+
   private final DonaTrackApi api;
   private final SesionMcp sesion;
 
   public DemoTools(DonaTrackApi api, SesionMcp sesion) {
     this.api = api;
     this.sesion = sesion;
+  }
+
+  // ── Despertar ──────────────────────────────────────────────────────────────
+
+  @Tool(
+      name = "despertar_servicios",
+      description =
+          "Despierta los cuatro módulos y dice cuáles responden. En Render los servicios del "
+              + "plan gratuito se duermen sin tráfico y el primer pedido puede tardar un minuto o "
+              + "fallar. Conviene usarlo antes de una demostración y cada vez que un módulo "
+              + "conteste que no responde.")
+  public String despertarServicios() {
+    // En paralelo y no uno detrás de otro: un módulo caído tarda lo que tarde en darse por
+    // vencido, y en serie esa espera se suma cuatro veces. Nadie va a esperar eso delante de
+    // alguien que está mirando.
+    java.util.Map<String, Supplier<String>> consultas = new LinkedHashMap<>();
+    consultas.put("Donaciones", () -> api.getDonaciones("/productos"));
+    consultas.put("Donadores", () -> api.getDonadores("/donadores"));
+    consultas.put("Logística", () -> api.getLogistica("/depositos"));
+    consultas.put("Incentivos", () -> api.getIncentivos("/insignias"));
+
+    java.util.Map<String, java.util.concurrent.CompletableFuture<String>> pendientes =
+        new LinkedHashMap<>();
+    consultas.forEach(
+        (modulo, consulta) ->
+            pendientes.put(
+                modulo,
+                java.util.concurrent.CompletableFuture.supplyAsync(() -> ping(modulo, consulta))
+                    // Se deja de esperar al minuto, pero el pedido sigue viajando: aunque no se
+                    // vea la respuesta, alcanza para que Render arranque el servicio.
+                    .completeOnTimeout(
+                        "- **" + modulo + "** — ⚠️ tardó más de un minuto; probá de nuevo\n",
+                        60,
+                        java.util.concurrent.TimeUnit.SECONDS)));
+
+    StringBuilder sb = new StringBuilder("**Estado de los módulos**\n\n");
+    pendientes.forEach((modulo, futuro) -> sb.append(futuro.join()));
+    return sb.append(
+            "\nSi alguno sigue sin contestar, esperá un minuto y probá de nuevo: puede estar "
+                + "arrancando.\n")
+        .toString();
+  }
+
+  private String ping(String modulo, Supplier<String> consulta) {
+    long inicio = System.currentTimeMillis();
+    try {
+      consulta.get();
+      return "- **" + modulo + "** — ✅ responde (" + (System.currentTimeMillis() - inicio) / 1000
+          + "s)\n";
+    } catch (Exception e) {
+      return "- **" + modulo + "** — ⚠️ no responde\n";
+    }
   }
 
   // ── Dejar la base limpia ───────────────────────────────────────────────────
@@ -203,10 +258,11 @@ public class DemoTools {
         **Guion de la demostración**
 
         **Preparación**
-        1. `reiniciar_sistema` — deja las cuatro bases vacías.
-        2. `preparar_demo` — carga las precondiciones: identificador, producto, donador, entidad,
+        1. `despertar_servicios` — los de Render se duermen; conviene hacerlo unos minutos antes.
+        2. `reiniciar_sistema` — deja las cuatro bases vacías.
+        3. `preparar_demo` — carga las precondiciones: identificador, producto, donador, entidad,
            depósito, insignia y misión.
-        3. `estado_del_sistema` — para mostrar de dónde se parte.
+        4. `estado_del_sistema` — para mostrar de dónde se parte.
 
         **Los seis flujos, en el orden en que se encadenan**
         1. `registrar_necesidad` — una entidad pide algo. Si ya había stock, se asigna en el acto.
@@ -239,21 +295,17 @@ public class DemoTools {
   }
 
   /**
-   * Lee y, si el módulo no contestó, prueba una vez más.
+   * Lee con un límite de paciencia.
    *
-   * <p>En Render el primer pedido a un servicio dormido se pierde despertándolo y el segundo anda.
-   * Sin el reintento, el resumen muestra un módulo vacío que en realidad está bien, que es
-   * justamente lo que no se quiere mientras alguien mira la pantalla.
+   * <p>Las consultas ya se reintentan solas cuando el módulo está dormido, pero un módulo caído
+   * tarda minutos en darse por vencido y el resumen es lo primero que se muestra en una
+   * demostración. Vale más un «no respondió» a tiempo que el dato exacto tres minutos después.
    */
   private JsonNode leer(Supplier<String> consulta) {
     try {
-      return MAPPER.readTree(consulta.get());
-    } catch (DonaTrackApi.SinRespuesta primera) {
-      try {
-        return MAPPER.readTree(consulta.get());
-      } catch (Exception segunda) {
-        return null;
-      }
+      return MAPPER.readTree(
+          java.util.concurrent.CompletableFuture.supplyAsync(consulta)
+              .get(PACIENCIA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS));
     } catch (Exception e) {
       return null;
     }

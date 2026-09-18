@@ -33,10 +33,10 @@ Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
 ventana.
 
-Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 21
+Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 32
 tools disponibles.
 
-## Las 21 herramientas
+## Las herramientas
 
 Están agrupadas por lo que alguien querría hacer, no una por endpoint. Por ejemplo,
 `consultar_donadores` sirve tanto para listar todos como para traer uno: desde el punto de
@@ -72,6 +72,58 @@ vista de quien pregunta es la misma intención.
 | `modificar_entidad` | Cambiar datos de contacto |
 | `eliminar_necesidad` | Borrar una necesidad |
 | `procesar_donador_en_incentivos` | Forzar la evaluación de una misión |
+| `reportar_entrega` | Cerrar el circuito: la donación se da por cumplida |
+| `cambiar_estado_donador` | VERIFICADO, SOSPECHOSO o BANEADO |
+| `cambiar_categoria_donador` | Dejarlo en una categoría determinada |
+
+### Sesión
+
+| Herramienta | Para qué |
+|---|---|
+| `iniciar_sesion` | Entrar como ADMIN o como un donador |
+| `quien_soy` | Con qué permisos se está operando |
+| `cerrar_sesion` | Salir |
+
+### Demostración
+
+| Herramienta | Para qué |
+|---|---|
+| `guion_demo` | El orden sugerido para mostrar el sistema |
+| `despertar_servicios` | Sacar del sueño a los cuatro módulos de Render |
+| `reiniciar_sistema` | Vaciar las cuatro bases |
+| `preparar_demo` | Cargar las precondiciones de todos los flujos |
+| `estado_del_sistema` | Cómo está todo ahora, módulo por módulo |
+
+## Las operaciones cuentan qué provocaron
+
+Registrar una donación no devuelve el JSON que contestó Donaciones, sino un resumen de qué
+cambió en cada módulo:
+
+```
+**Donación registrada** · traza `mcp-4f21a9`
+
+- **Donaciones** — donación nº 12: 10 unidades de «Arroz», estado INGRESADA.
+- **Donadores** — confirmó que el donador nº 1 existe y que está habilitado para donar.
+- **Logística** — stock del producto: 0 → 0. No subió, así que la asignó a una necesidad.
+- **Donadores** — necesidad nº 7 «Arroz para el comedor» ░░░░░░░░░░ 0/20, sin cambios.
+
+> Ojo: la necesidad **no** se satisface al donar. Recién cambia cuando Logística reporta la
+> entrega del paquete.
+
+Siguiente paso sugerido: `reportar_entrega`.
+```
+
+Se saca una foto del sistema antes y otra después, y se cuenta la diferencia. Lo que **no**
+cambió también se dice: que una necesidad siga en 0/20 después de una donación no es un error,
+es la regla del sistema, y es justo lo que más se malinterpreta.
+
+Ninguna de esas consultas puede hacer fallar la operación: si un módulo no contesta, esa línea
+dice que no contestó en vez de dar por hecho que no pasó nada.
+
+La **traza** que aparece arriba viaja en el header `X-Trace-Id`. Donaciones y Donadores la
+escriben en cada línea de log y la reenvían al módulo siguiente, así que buscándola en Datadog
+se ve qué hizo cada uno. Logística e Incentivos todavía no la propagan: si la operación entra por
+ellos —una entrega, un procesamiento— el relato lo aclara en vez de prometer el recorrido.
 
 ## Cómo se usa
 

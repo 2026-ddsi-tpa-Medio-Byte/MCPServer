@@ -71,6 +71,8 @@ class RelatoTest {
                 {"id":"12","donadorID":"1","productoID":"3","cantidad":10,"estado":"INGRESADA"}""",
                 MediaType.APPLICATION_JSON));
 
+    esperarPaquete("paq-12", "7");
+
     String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
 
     assertTrue(relato.contains("nº 12"), "tiene que decir qué donación se creó");
@@ -78,12 +80,15 @@ class RelatoTest {
     assertTrue(relato.contains("INGRESADA"));
     assertTrue(relato.contains("Donadores"), "hay que mostrar que se consultó a Donadores");
     assertTrue(
-        relato.contains("asignó a una necesidad"),
-        "si el stock no subió, Logística la asignó en vez de guardarla");
+        relato.contains("armó el paquete paq-12 y lo asignó a la necesidad nº 7"),
+        "el destino se lee del paquete, que es un dato, no se deduce del stock");
     assertTrue(
         relato.contains("no** se satisface al donar"),
         "es la confusión más frecuente: conviene aclararla en el momento");
     assertTrue(relato.contains("reportar_entrega"), "el relato encadena con el paso siguiente");
+    assertTrue(
+        relato.contains("Donaciones y Donadores escriben esta traza"),
+        "la donación entra por Donaciones: se puede seguir en Datadog");
   }
 
   @Test
@@ -92,6 +97,7 @@ class RelatoTest {
     esperarProducto("3", "Arroz");
     esperarNecesidades("3", "[]");
     esperarStock("3", 0, 10);
+    sinPaquete("paq-12");
     servidor
         .expect(requestTo(DONACIONES + "/donaciones"))
         .andExpect(method(HttpMethod.POST))
@@ -106,7 +112,7 @@ class RelatoTest {
     assertTrue(relato.contains("0 → 10"));
     assertTrue(relato.contains("quedó guardada"));
     assertFalse(
-        relato.contains("asignó a una necesidad"),
+        relato.contains("lo asignó a la necesidad"),
         "no se puede decir las dos cosas: o se asignó o quedó en stock");
   }
 
@@ -117,6 +123,9 @@ class RelatoTest {
     esperarNecesidades("3", "[]");
     servidor
         .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/stock/3"))
+        .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR).body("boom"));
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-12"))
         .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR).body("boom"));
     servidor
         .expect(requestTo(DONACIONES + "/donaciones"))
@@ -135,6 +144,35 @@ class RelatoTest {
   }
 
   @Test
+  @DisplayName("Si el worker de Logística todavía no terminó, se dice en vez de inventar el destino")
+  void workerQueTodaviaNoTermino() {
+    esperarProducto("3", "Arroz");
+    esperarNecesidades(
+        "3",
+        """
+        [{"id":"7","descripcion":"Arroz","cantidadObjetivo":20,"cantidadActual":0}]""");
+    esperarStock("3", 0, 0);
+    sinPaquete("paq-12");
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(
+            withSuccess(
+                "{\"id\":\"12\",\"cantidad\":10,\"estado\":\"INGRESADA\"}",
+                MediaType.APPLICATION_JSON));
+
+    String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
+
+    assertTrue(relato.contains("todavía la está procesando"));
+    assertFalse(
+        relato.contains("lo asignó"),
+        "que el stock no haya subido no prueba nada si el worker no terminó");
+    assertFalse(
+        relato.contains("Sin respuesta de: Logística"),
+        "Logística contestó: que el paquete no exista todavía no es que esté caída");
+  }
+
+  @Test
   @DisplayName("La operación viaja con una traza para poder seguirla en Datadog")
   void trazaEnElHeader() {
     esperarProducto("3", "Arroz");
@@ -145,6 +183,7 @@ class RelatoTest {
         .andExpect(method(HttpMethod.POST))
         .andExpect(header("X-Trace-Id", Matchers.startsWith("mcp-")))
         .andRespond(withSuccess("{\"id\":\"12\"}", MediaType.APPLICATION_JSON));
+    esperarPaquete("paq-12", "7");
 
     String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
 
@@ -210,6 +249,9 @@ class RelatoTest {
     assertTrue(relato.contains("Todavía le falta"));
     assertTrue(relato.contains("paq-12"), "hay que poder leer los campos reales de Logística");
     assertTrue(relato.contains("matchmaking"), "de dónde salió la asignación es parte del relato");
+    assertTrue(
+        relato.contains("no se puede seguir de punta a punta"),
+        "la entrega entra por Logística, que no propaga la traza: prometer lo contrario es mentir");
   }
 
   @Test
@@ -317,32 +359,60 @@ class RelatoTest {
   @DisplayName("Preparar la demo crea el depósito por defecto, no uno cualquiera")
   void prepararUsaElDepositoPorDefecto() {
     SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+
+    // Antes de escribir nada consulta los cuatro módulos para despertarlos: en Render el primer
+    // pedido a un servicio dormido se pierde, y un POST perdido no se puede reintentar.
+    servidor
+        .expect(requestTo(DONACIONES + "/productos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/depositos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(INCENTIVOS + "/insignias"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
     servidor
         .expect(requestTo(DONACIONES + "/identificadores"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{\"id\":\"1\"}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(DONACIONES + "/productos"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{\"id\":\"2\"}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{\"id\":\"3\"}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(DONADORES + "/entidades"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{\"id\":\"4\"}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(LOGISTICA + "/depositos"))
+        .andExpect(method(HttpMethod.POST))
         .andExpect(
             org.springframework.test.web.client.match.MockRestRequestMatchers.content()
                 .string(Matchers.containsString("DEP-UTN-01")))
         .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(INCENTIVOS + "/insignias"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(INCENTIVOS + "/misiones"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
     servidor
         .expect(requestTo(DONADORES + "/necesidades"))
+        .andExpect(method(HttpMethod.POST))
         .andRespond(withSuccess("{\"id\":\"5\"}", MediaType.APPLICATION_JSON));
 
     String salida = seed.prepararDemo(null);
@@ -432,6 +502,27 @@ class RelatoTest {
         .expect(
             ExpectedCount.manyTimes(), requestTo(DONADORES + "/necesidades?productoID=" + productoId))
         .andRespond(withSuccess(json, MediaType.APPLICATION_JSON));
+  }
+
+  /** Una asignación real de Logística, con los campos en minúscula como los devuelve. */
+  private void esperarPaquete(String paquete, String necesidad) {
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/api/asignaciones/paquetes/" + paquete))
+        .andRespond(
+            withSuccess(
+                "{\"paqueteid\":\""
+                    + paquete
+                    + "\",\"necesidadid\":\""
+                    + necesidad
+                    + "\",\"estado\":\"ASIGNADA\",\"origen\":\"MATCHMAKING\",\"cantidad\":10}",
+                MediaType.APPLICATION_JSON));
+  }
+
+  /** Logística contesta, pero el paquete todavía no existe. */
+  private void sinPaquete(String paquete) {
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/api/asignaciones/paquetes/" + paquete))
+        .andRespond(withStatus(HttpStatus.NOT_FOUND).body("no existe"));
   }
 
   /** El stock se consulta dos veces: antes y después. Por eso van dos respuestas. */

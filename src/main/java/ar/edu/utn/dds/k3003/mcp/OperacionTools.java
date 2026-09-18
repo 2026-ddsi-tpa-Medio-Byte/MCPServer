@@ -75,10 +75,22 @@ public class OperacionTools {
       java.util.function.Supplier<Panorama> foto,
       java.util.function.Supplier<String> operacion,
       Relato relato) {
+    return conRelato(foto, respuesta -> foto.get(), operacion, relato);
+  }
+
+  /**
+   * Variante para cuando la foto de después necesita algo que recién se sabe con la respuesta,
+   * como el número de la donación que se acaba de crear.
+   */
+  private String conRelato(
+      java.util.function.Supplier<Panorama> fotoAntes,
+      java.util.function.Function<com.fasterxml.jackson.databind.JsonNode, Panorama> fotoDespues,
+      java.util.function.Supplier<String> operacion,
+      Relato relato) {
     if (!narrar) {
       return operacion.get();
     }
-    Panorama antes = foto.get();
+    Panorama antes = fotoAntes.get();
     String respuesta;
     String traza = api.nuevaTraza();
     try {
@@ -87,7 +99,8 @@ public class OperacionTools {
       api.cerrarTraza();
     }
     try {
-      return relato.contar(parsear(respuesta), antes, foto.get(), traza);
+      com.fasterxml.jackson.databind.JsonNode cuerpo = parsear(respuesta);
+      return relato.contar(cuerpo, antes, fotoDespues.apply(cuerpo), traza);
     } catch (Exception e) {
       return respuesta + "\n\n_(No se pudo armar el resumen del impacto: " + e.getMessage() + ")_";
     }
@@ -126,6 +139,11 @@ public class OperacionTools {
     String producto = productoId.trim();
     return conRelato(
         () -> Panorama.deDonacion(api, producto),
+        // Después, además de lo mismo que antes, se busca el paquete que armó Logística: es la
+        // única forma de saber con certeza a qué necesidad fue la donación.
+        creada ->
+            Panorama.deDonacion(api, producto)
+                .conAsignacionDe(Panorama.texto(creada, "id")),
         () ->
             api.postDonaciones(
                 "/donaciones",

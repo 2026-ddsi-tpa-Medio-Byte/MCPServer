@@ -34,7 +34,7 @@ class Narrador {
 
   static String donacion(JsonNode creada, Panorama antes, Panorama despues, String traza) {
     StringBuilder sb = new StringBuilder();
-    sb.append(encabezado("Donación registrada", traza));
+    sb.append(encabezado("Donación registrada", traza, "Donaciones"));
 
     String nombreProducto = nombreDe(antes.producto, texto(creada, "productoID"));
     sb.append(
@@ -56,7 +56,10 @@ class Narrador {
                 + texto(creada, "donadorID")
                 + " existe y que está habilitado para donar. Son dos consultas que Donaciones "
                 + "hace antes de guardar nada."));
-    sb.append(linea("Logística", efectoEnLogistica(antes, despues, numero(creada, "cantidad"))));
+    sb.append(
+        linea(
+            "Logística",
+            efectoEnLogistica(antes, despues, numero(creada, "cantidad"), texto(creada, "id"))));
     sb.append(necesidades(antes, despues, nombreProducto));
 
     sb.append(
@@ -66,48 +69,73 @@ class Narrador {
     return sb.toString();
   }
 
-  private static String efectoEnLogistica(Panorama antes, Panorama despues, int cantidad) {
-    if (antes.stock == null || despues.stock == null) {
-      return "no se pudo leer el stock del producto, así que no se puede afirmar qué hizo con la "
-          + "donación.";
+  /**
+   * Qué hizo Logística con la donación.
+   *
+   * <p>Lo primero que se mira es el paquete, porque es un dato: dice a qué necesidad fue. El
+   * stock solo sirve para confirmar cuando la donación se guardó. Deducir la asignación de que el
+   * stock no subió sería frágil: Logística trabaja en segundo plano, y si se mira antes de que
+   * termine, que no haya subido no significa nada.
+   */
+  private static String efectoEnLogistica(
+      Panorama antes, Panorama despues, int cantidad, String donacionId) {
+    Integer diferencia =
+        antes.stock == null || despues.stock == null ? null : despues.stock - antes.stock;
+    String stock =
+        diferencia == null
+            ? ""
+            : " Stock del producto: " + antes.stock + " → " + despues.stock + ".";
+
+    if (despues.asignacion != null) {
+      int asignadas = numero(despues.asignacion, "cantidad");
+      String origen = Panorama.alguno(despues.asignacion, "origen");
+      String texto =
+          "armó el paquete "
+              + Panorama.alguno(despues.asignacion, "paqueteid", "paqueteID")
+              + " y lo asignó a la necesidad nº "
+              + Panorama.alguno(despues.asignacion, "necesidadid", "necesidadID")
+              + ("MATCHMAKING".equals(origen) ? ", por matchmaking" : "")
+              + ".";
+      if (asignadas > 0 && asignadas < cantidad) {
+        texto += " Asignó " + asignadas + " de las " + cantidad + " unidades y el resto lo guardó.";
+      }
+      return texto + stock;
     }
-    int diferencia = despues.stock - antes.stock;
-    String movimiento = "stock del producto: " + antes.stock + " → " + despues.stock + ". ";
-    if (diferencia >= cantidad) {
-      return movimiento
-          + "Subió por la donación: no había ninguna necesidad que la pudiera recibir, así que "
-          + "quedó guardada esperando a que alguien la pida.";
+    if (diferencia != null && diferencia >= cantidad) {
+      return "no había ninguna necesidad que la pudiera recibir, así que quedó guardada esperando "
+          + "a que alguien la pida."
+          + stock;
     }
-    if (diferencia > 0) {
-      return movimiento
-          + "Subió "
-          + diferencia
-          + " de "
-          + cantidad
-          + ": una parte se asignó a una necesidad y el sobrante quedó en stock.";
+    if (despues.asignacionPendiente) {
+      return "todavía la está procesando: lo hace en segundo plano, con un worker, y el paquete "
+          + "paq-"
+          + donacionId
+          + " tarda unos segundos en aparecer."
+          + stock;
     }
-    if (antes.necesidadesDelProducto.isEmpty() && despues.necesidadesDelProducto.isEmpty()) {
-      return movimiento
-          + "No cambió y tampoco hay necesidades de este producto: convendría revisar si "
-          + "Logística llegó a tomar la donación.";
-    }
-    return movimiento + "No subió, así que Logística la asignó a una necesidad en vez de guardarla.";
+    return "no se pudo consultar el paquete, así que no se puede afirmar a dónde fue la donación."
+        + stock;
   }
 
   // ── Entrega ────────────────────────────────────────────────────────────────
 
   static String entrega(Panorama antes, Panorama despues, String traza) {
     StringBuilder sb = new StringBuilder();
-    sb.append(encabezado("Entrega reportada", traza));
+    sb.append(encabezado("Entrega reportada", traza, "Logística"));
 
-    String origen = Panorama.alguno(antes.asignacion, "origen");
+    // Si antes de la entrega el paquete todavía no figuraba —Logística procesa en segundo plano—,
+    // los datos que no cambian (código, origen) se toman de la foto de después.
+    JsonNode asignacion = antes.asignacion != null ? antes.asignacion : despues.asignacion;
+    String estadoAntes =
+        antes.asignacionPendiente ? "todavía no figuraba" : texto(antes.asignacion, "estado");
+    String origen = Panorama.alguno(asignacion, "origen");
     sb.append(
         linea(
             "Logística",
             "paquete "
-                + Panorama.alguno(antes.asignacion, "paqueteID", "paqueteid")
+                + Panorama.alguno(asignacion, "paqueteID", "paqueteid")
                 + ", asignación "
-                + cambio(texto(antes.asignacion, "estado"), texto(despues.asignacion, "estado"))
+                + cambio(estadoAntes, texto(despues.asignacion, "estado"))
                 + (origen.isBlank()
                     ? "."
                     : ". Se había asignado por "
@@ -149,6 +177,23 @@ class Narrador {
                   + "»: "
                   + progreso
                   + (completa ? ". Quedó cubierta." : ". Todavía le falta.")));
+    } else if (despues.necesidad != null) {
+      // No se supo a qué necesidad iba hasta después de entregar: se muestra cómo quedó, sin
+      // inventar de dónde venía.
+      sb.append(
+          linea(
+              "Donadores",
+              "necesidad nº "
+                  + texto(despues.necesidad, "id")
+                  + " «"
+                  + texto(despues.necesidad, "descripcion")
+                  + "»: quedó en "
+                  + barra(despues.necesidad)
+                  + " "
+                  + numero(despues.necesidad, "cantidadActual")
+                  + "/"
+                  + numero(despues.necesidad, "cantidadObjetivo")
+                  + "."));
     } else {
       sb.append(
           linea(
@@ -180,7 +225,7 @@ class Narrador {
 
   static String queja(Panorama antes, Panorama despues, String traza) {
     StringBuilder sb = new StringBuilder();
-    sb.append(encabezado("Queja registrada", traza));
+    sb.append(encabezado("Queja registrada", traza, "Donaciones"));
 
     sb.append(
         linea(
@@ -243,7 +288,7 @@ class Narrador {
 
   static String necesidad(JsonNode creada, Panorama antes, Panorama despues, String traza) {
     StringBuilder sb = new StringBuilder();
-    sb.append(encabezado("Necesidad registrada", traza));
+    sb.append(encabezado("Necesidad registrada", traza, "Donadores"));
 
     sb.append(
         linea(
@@ -304,7 +349,7 @@ class Narrador {
 
   static String procesado(Panorama antes, Panorama despues, String traza) {
     StringBuilder sb = new StringBuilder();
-    sb.append(encabezado("Donador procesado en Incentivos", traza));
+    sb.append(encabezado("Donador procesado en Incentivos", traza, "Incentivos"));
 
     int insigniasAntes = cantidadInsignias(antes.insignias);
     int insigniasDespues = cantidadInsignias(despues.insignias);
@@ -342,13 +387,27 @@ class Narrador {
 
   // ── Piezas comunes ─────────────────────────────────────────────────────────
 
-  private static String encabezado(String titulo, String traza) {
-    return "**"
-        + titulo
-        + "** · traza `"
-        + traza
-        + "`\n\n_(Todos los módulos registraron esta traza: buscándola en Datadog aparece el "
-        + "recorrido completo de esta operación.)_\n\n";
+  /**
+   * La nota sobre la traza depende de por dónde entra la operación.
+   *
+   * <p>Solo Donaciones y Donadores leen la traza, la escriben en sus logs y la reenvían al módulo
+   * siguiente. Logística e Incentivos todavía no: si la operación entra por ellos, la traza se
+   * pierde en el primer salto. Decir que se puede seguir en Datadog sería prometer algo que no
+   * está.
+   */
+  private static String encabezado(String titulo, String traza, String entraPor) {
+    String nota =
+        switch (entraPor) {
+          case "Donaciones", "Donadores" ->
+              "Donaciones y Donadores escriben esta traza en cada línea de log: filtrando por ella "
+                  + "en Datadog se ve qué hizo cada uno en esta operación.";
+          default ->
+              "Esta operación entra por "
+                  + entraPor
+                  + ", que todavía no propaga la traza: en Datadog no se puede seguir de punta a "
+                  + "punta.";
+        };
+    return "**" + titulo + "** · traza `" + traza + "`\n\n_(" + nota + ")_\n\n";
   }
 
   private static String linea(String modulo, String texto) {

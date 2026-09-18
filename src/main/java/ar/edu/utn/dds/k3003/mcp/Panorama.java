@@ -40,6 +40,14 @@ class Panorama {
   JsonNode mision;
   JsonNode quejas;
 
+  /**
+   * Logística contestó, pero el paquete todavía no figura.
+   *
+   * <p>No es lo mismo que no contestar: Logística procesa las donaciones en segundo plano, con un
+   * worker, y durante unos segundos después de donar el paquete todavía no existe.
+   */
+  boolean asignacionPendiente;
+
   private Panorama(DonaTrackApi api) {
     this.api = api;
   }
@@ -63,8 +71,7 @@ class Panorama {
    */
   static Panorama deEntrega(DonaTrackApi api, String paqueteId, String donacionId) {
     Panorama p = new Panorama(api);
-    p.asignacion =
-        p.leer("Logística", () -> api.getLogistica("/api/asignaciones/paquetes/" + paqueteId));
+    p.leerAsignacion(paqueteId);
     p.donacion = p.leer("Donaciones", () -> api.getDonaciones("/donaciones/" + donacionId));
     String necesidadId = alguno(p.asignacion, "necesidadID", "necesidadid");
     if (!necesidadId.isBlank()) {
@@ -111,13 +118,34 @@ class Panorama {
 
   // ── Lectura tolerante a fallas ─────────────────────────────────────────────
 
+  /**
+   * Segundos que el relato espera por cada consulta antes de darla por perdida.
+   *
+   * <p>Con los módulos despiertos cada una tarda menos de un segundo. El límite existe para el
+   * caso contrario: un módulo caído tarda un minuto y medio en darse por vencido, y el relato
+   * acompaña a una operación que <b>ya ocurrió</b>. Nadie va a esperar tres minutos delante de
+   * alguien que está mirando la pantalla, y menos para enterarse de que no se pudo saber nada.
+   */
+  private static final int PACIENCIA_SEGUNDOS = 6;
+
+  /** El worker de Logística suele tardar un par de segundos en procesar una donación. */
+  private static final int INTENTOS_ASIGNACION = 3;
+
+  private static final long ESPERA_ENTRE_INTENTOS_MS = 1500;
+
   private JsonNode leer(String modulo, Supplier<String> consulta) {
     try {
-      return MAPPER.readTree(consulta.get());
+      return MAPPER.readTree(conPaciencia(consulta));
     } catch (Exception e) {
       sinRespuesta.add(modulo);
       return null;
     }
+  }
+
+  /** Espera la consulta, pero no más de lo que dura la atención de quien está mirando. */
+  private static String conPaciencia(Supplier<String> consulta) throws Exception {
+    return java.util.concurrent.CompletableFuture.supplyAsync(consulta)
+        .get(PACIENCIA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS);
   }
 
   private List<JsonNode> leerLista(String productoId) {
@@ -130,15 +158,65 @@ class Panorama {
     return lista;
   }
 
+  /**
+   * Suma a la foto la asignación que Logística le dio a una donación recién hecha.
+   *
+   * <p>Se consulta el paquete en vez de deducir el destino del stock, porque la deducción falla
+   * justo acá: Logística procesa en segundo plano, y si se mira antes de que el worker termine,
+   * que el stock no haya subido no dice nada. Por eso se reintenta un par de veces.
+   */
+  Panorama conAsignacionDe(String donacionId) {
+    for (int intento = 0; intento < INTENTOS_ASIGNACION; intento++) {
+      if (intento > 0) {
+        esperar(ESPERA_ENTRE_INTENTOS_MS);
+      }
+      asignacionPendiente = false;
+      leerAsignacion("paq-" + donacionId);
+      if (asignacion != null || !asignacionPendiente) {
+        break;
+      }
+    }
+    return this;
+  }
+
+  /** Distingue «el paquete todavía no existe» de «Logística no contestó». */
+  private void leerAsignacion(String paqueteId) {
+    try {
+      asignacion =
+          MAPPER.readTree(
+              conPaciencia(() -> api.getLogistica("/api/asignaciones/paquetes/" + paqueteId)));
+    } catch (Exception e) {
+      asignacion = null;
+      if (e.getCause() instanceof DonaTrackApi.NoEncontrado
+          || e instanceof DonaTrackApi.NoEncontrado) {
+        asignacionPendiente = true;
+      } else {
+        sinRespuesta.add("Logística");
+      }
+    }
+  }
+
+  private static void esperar(long milisegundos) {
+    try {
+      Thread.sleep(milisegundos);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
   /** Logística devuelve {@code {"disponible": n}}. */
   private Integer leerStock(String productoId) {
     try {
-      return MAPPER.readTree(api.getLogistica("/stock/" + productoId)).path("disponible").asInt(0);
-    } catch (DonaTrackApi.NoEncontrado e) {
+      return MAPPER.readTree(conPaciencia(() -> api.getLogistica("/stock/" + productoId)))
+          .path("disponible")
+          .asInt(0);
+    } catch (Exception e) {
       // Que un producto no figure en el stock significa que no hay nada guardado de él, no que
       // Logística esté fallando. Son cero unidades, y contarlo así deja ver si después suben.
-      return 0;
-    } catch (Exception e) {
+      if (e.getCause() instanceof DonaTrackApi.NoEncontrado
+          || e instanceof DonaTrackApi.NoEncontrado) {
+        return 0;
+      }
       sinRespuesta.add("Logística");
       return null;
     }

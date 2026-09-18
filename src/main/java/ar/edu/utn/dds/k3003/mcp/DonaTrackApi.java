@@ -155,12 +155,29 @@ public class DonaTrackApi {
       }
       throw new RuntimeException(explicacion);
     } catch (ResourceAccessException e) {
-      throw new SinRespuesta(
-          "El módulo no responde ("
-              + url
-              + "). Los servicios de Render se duermen: puede tardar hasta un minuto en "
-              + "despertar. Conviene reintentar una vez.");
+      // Una consulta se puede repetir sin consecuencias, y en Render el primer pedido a un
+      // servicio dormido se pierde despertándolo. Una operación que modifica datos NO se
+      // reintenta: sin respuesta no se sabe si llegó, y repetirla puede duplicarla.
+      if (metodo == HttpMethod.GET) {
+        log.info("Reintentando {} {} (el módulo estaba dormido)", metodo, url);
+        try {
+          String resp =
+              rest.exchange(url, metodo, new HttpEntity<>(body, cabeceras()), String.class)
+                  .getBody();
+          return resp == null || resp.isBlank() ? "Operación realizada." : resp;
+        } catch (RuntimeException segunda) {
+          throw new SinRespuesta(sinRespuesta(url));
+        }
+      }
+      throw new SinRespuesta(sinRespuesta(url));
     }
+  }
+
+  private String sinRespuesta(String url) {
+    return "El módulo no responde ("
+        + url
+        + "). Los servicios de Render se duermen: puede tardar hasta un minuto en despertar. "
+        + "Conviene usar 'despertar_servicios' antes de seguir.";
   }
 
   /**
