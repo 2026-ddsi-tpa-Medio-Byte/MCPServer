@@ -356,6 +356,36 @@ class RelatoTest {
   }
 
   @Test
+  @DisplayName("Si un módulo no despertó, preparar la demo no carga nada a medias")
+  void prepararNoCargaSiFaltaUnModulo() {
+    SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONACIONES + "/productos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/depositos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(INCENTIVOS + "/insignias"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
+    String salida = seed.prepararDemo(null);
+
+    // Si hubiera intentado escribir, el servidor simulado habría fallado por pedido inesperado.
+    servidor.verify();
+    assertTrue(salida.contains("No se cargó nada"));
+    assertTrue(salida.contains("Donaciones"), "hay que decir cuál falta");
+    assertTrue(salida.contains("despertar_servicios"), "y cómo resolverlo");
+  }
+
+  @Test
   @DisplayName("Preparar la demo crea el depósito por defecto, no uno cualquiera")
   void prepararUsaElDepositoPorDefecto() {
     SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");

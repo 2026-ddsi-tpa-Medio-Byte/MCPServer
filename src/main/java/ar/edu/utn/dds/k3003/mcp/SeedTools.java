@@ -31,11 +31,11 @@ public class SeedTools {
   /**
    * Lo que se espera a que despierten los módulos antes de empezar a escribir.
    *
-   * <p>Sale de restar hacia atrás: Claude corta la herramienta a los 60 segundos, y después de
-   * despertar todavía quedan ocho escrituras. Si un módulo no contestó en este tiempo, lo más
-   * probable es que no esté dormido sino caído.
+   * <p>Corto a propósito: un servicio de Render que arranca de cero tarda uno o dos minutos, más
+   * que el corte de 60 segundos de una herramienta. Si no contestan en este tiempo no se escribe
+   * nada y se avisa; el pedido igual los despierta, así que el siguiente intento los encuentra.
    */
-  private static final int ESPERA_MAXIMA_SEGUNDOS = 30;
+  private static final int ESPERA_MAXIMA_SEGUNDOS = 20;
 
   private final DonaTrackApi api;
   private final SesionMcp sesion;
@@ -76,6 +76,19 @@ public class SeedTools {
     // Primero se despiertan los módulos con consultas. Si se arranca escribiendo, el primer POST
     // se pierde despertando al servicio y no se puede reintentar sin arriesgar un duplicado.
     java.util.Set<String> despiertos = despertar();
+
+    // Sin estos tres no hay nada que cargar. Cargar la mitad es peor que no cargar nada: quedan
+    // datos sueltos que no sirven para ningún flujo y hay que ir a limpiarlos a mano.
+    java.util.List<String> dormidos =
+        java.util.stream.Stream.of("Donaciones", "Donadores", "Logística")
+            .filter(modulo -> !despiertos.contains(modulo))
+            .toList();
+    if (!dormidos.isEmpty()) {
+      return "**No se cargó nada**\n\nTodavía no contestan: "
+          + String.join(", ", dormidos)
+          + ".\n\nArrancar de cero le lleva a Render uno o dos minutos. Ejecutá "
+          + "`despertar_servicios` hasta que los cuatro digan que responden y volvé a intentar.\n";
+    }
 
     try {
       String identId = crearIdentificador(sb, suf);

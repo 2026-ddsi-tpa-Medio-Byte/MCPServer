@@ -34,6 +34,17 @@ public class DemoTools {
   /** Lo que puede tardar una herramienta entera, con margen respecto del corte de 60 segundos. */
   private static final int PLAZO_SEGUNDOS = 45;
 
+  /**
+   * Lo que se espera por cada módulo al despertarlo.
+   *
+   * <p>Es corto a propósito. Un servicio de Render que arranca de cero tarda uno o dos minutos:
+   * más que el corte de 60 segundos, así que ninguna espera razonable alcanza para verlo
+   * arrancar. Lo que sí sirve es el pedido en sí, que dispara el arranque aunque nadie espere la
+   * respuesta. Conviene entonces contestar rápido y que se repita, en vez de hacer esperar al
+   * pedo.
+   */
+  private static final int PLAZO_DESPERTAR_SEGUNDOS = 20;
+
   /** El resumen se hace en dos rondas de consultas, así que cada una tiene la mitad del plazo. */
   private static final int PLAZO_POR_RONDA_SEGUNDOS = 20;
 
@@ -64,14 +75,25 @@ public class DemoTools {
     // Al llegar al plazo se deja de esperar, pero el pedido sigue viajando: aunque no se vea la
     // respuesta, alcanza para que Render termine de arrancar el servicio.
     Map<String, String> resultados =
-        aLaVez(pings, modulo -> "⚠️ todavía no contesta; puede estar arrancando", PLAZO_SEGUNDOS);
+        aLaVez(
+            pings,
+            modulo -> "⏳ arrancando (el pedido ya lo despertó)",
+            PLAZO_DESPERTAR_SEGUNDOS);
 
     StringBuilder sb = new StringBuilder("**Estado de los módulos**\n\n");
     resultados.forEach(
         (modulo, resultado) -> sb.append("- **").append(modulo).append("** — ").append(resultado).append("\n"));
-    return sb.append(
-            "\nSi alguno no contestó, esperá un minuto y probá de nuevo: puede estar arrancando.\n")
-        .toString();
+
+    boolean faltaAlguno = resultados.values().stream().anyMatch(r -> !r.startsWith("✅"));
+    if (faltaAlguno) {
+      sb.append(
+          "\nArrancar de cero le lleva a Render uno o dos minutos, más de lo que se puede esperar "
+              + "en una sola consulta. **Repetí esta herramienta hasta que los cuatro digan que "
+              + "responden**: cada intento los empuja un poco más.\n");
+    } else {
+      sb.append("\nLos cuatro están despiertos. Se duermen de nuevo tras un rato sin uso.\n");
+    }
+    return sb.toString();
   }
 
   private String ping(Supplier<String> consulta) {
