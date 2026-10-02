@@ -89,9 +89,11 @@ public class SeedTools {
       @ToolParam(
               required = false,
               description =
-                  "Si es true, además de las precondiciones ejecuta el flujo entero (donación, "
-                      + "entrega, queja e incentivos) para dejar datos ya procesados. Por defecto "
-                      + "es false.")
+                  "Si es true, además de las precondiciones ejecuta el flujo hasta incentivos "
+                      + "(donación, entrega y procesamiento del donador) para dejar datos ya "
+                      + "procesados. No registra ninguna queja: si la entrega se pudo reportar, "
+                      + "la donación queda entregada y sirve para mostrar 'registrar_queja'. Por "
+                      + "defecto es false.")
           Boolean ejecutarFlujoPrincipal) {
 
     sesion.requerirAdmin("preparar la demostración");

@@ -49,8 +49,8 @@ public class ConsultaTools {
   @Tool(
       name = "consultar_quejas_de_donador",
       description =
-          "Las quejas que recibió un donador. Cada queja baja su reputación: con varias pasa a "
-              + "SOSPECHOSO y con más queda BANEADO, y ahí ya no puede donar.")
+          "Las quejas que recibió un donador. Cada queja baja su reputación: con 5 pasa a "
+              + "SOSPECHOSO y con 10 queda BANEADO, y ahí ya no puede donar.")
   public String consultarQuejas(@ToolParam(description = "Número del donador") String donadorId) {
     return api.getDonadores("/donadores/" + donadorId.trim() + "/quejas");
   }

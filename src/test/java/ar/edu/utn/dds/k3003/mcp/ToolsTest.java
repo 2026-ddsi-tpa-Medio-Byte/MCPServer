@@ -1,6 +1,7 @@
 package ar.edu.utn.dds.k3003.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
@@ -191,6 +192,141 @@ class ToolsTest {
         assertThrows(RuntimeException.class, () -> consultas.consultarDonadores("999"));
 
     assertTrue(e.getMessage().contains("No existe"));
+  }
+
+  @Test
+  @DisplayName("Un 403 dice que el módulo no permite la operación y conserva su motivo")
+  void errorSinPermiso() {
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones"))
+        .andRespond(
+            withStatus(HttpStatus.FORBIDDEN)
+                .body(
+                    "{\"error\":\"No puede donar: el donador 5 no está habilitado para donar\"}")
+                .contentType(MediaType.APPLICATION_JSON));
+
+    RuntimeException e =
+        assertThrows(
+            RuntimeException.class, () -> operaciones.registrarDonacion("5", "3", 10, "algo", null));
+
+    assertTrue(e.getMessage().contains("no permite"), e.getMessage());
+    assertTrue(
+        e.getMessage().contains("el donador 5 no está habilitado para donar"),
+        "el motivo real del módulo tiene que llegar al usuario");
+    assertFalse(e.getMessage().contains("código 403"), "no alcanza con repetir el número");
+  }
+
+  @Test
+  @DisplayName("Un 502 de nuestro módulo dice que otro módulo no respondió y nombra cuál")
+  void error502DeOtroModulo() {
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones"))
+        .andRespond(
+            withStatus(HttpStatus.BAD_GATEWAY)
+                // El detalle cita a Logística diciendo «no existe»: aun así no es un 404.
+                .body(
+                    "{\"error\":\"El módulo Logística respondió con error 500: el depósito no"
+                        + " existe\"}")
+                .contentType(MediaType.APPLICATION_JSON));
+
+    RuntimeException e =
+        assertThrows(
+            RuntimeException.class, () -> operaciones.registrarDonacion("1", "3", 10, "algo", null));
+
+    assertTrue(e.getMessage().contains("otro módulo del que depende no respondió"), e.getMessage());
+    assertTrue(e.getMessage().contains("Logística"), "el mensaje del módulo dice cuál falló");
+    assertFalse(
+        e instanceof DonaTrackApi.NoEncontrado,
+        "un 502 nunca es «no existe», aunque el detalle lo diga");
+    assertFalse(
+        e instanceof DonaTrackApi.SinRespuesta,
+        "Donaciones sí contestó: no es el módulo el que está dormido");
+  }
+
+  @Test
+  @DisplayName("Un 502 de Render, sin el cuerpo de nuestros módulos, manda a despertar el servicio")
+  void error502DeRender() {
+    servidor
+        .expect(requestTo(DONADORES + "/donadores/7"))
+        .andRespond(
+            withStatus(HttpStatus.BAD_GATEWAY)
+                .body("<html><body><h1>502 Bad Gateway</h1></body></html>")
+                .contentType(MediaType.TEXT_HTML));
+
+    RuntimeException e =
+        assertThrows(RuntimeException.class, () -> consultas.consultarDonadores("7"));
+
+    assertTrue(e instanceof DonaTrackApi.SinRespuesta, "es el servicio que no anda, no un dato");
+    assertTrue(e.getMessage().contains("despertar_servicios"), e.getMessage());
+    assertFalse(e.getMessage().contains("otro módulo"), "no hay ningún otro módulo en juego");
+  }
+
+  @Test
+  @DisplayName("Un 502 vacío también se toma como Render despertando el servicio")
+  void error502Vacio() {
+    servidor
+        .expect(requestTo(DONACIONES + "/productos"))
+        .andRespond(withStatus(HttpStatus.BAD_GATEWAY));
+
+    RuntimeException e =
+        assertThrows(RuntimeException.class, () -> consultas.consultarProductos(null));
+
+    assertTrue(e instanceof DonaTrackApi.SinRespuesta);
+    assertTrue(e.getMessage().contains("despertar_servicios"));
+  }
+
+  @Test
+  @DisplayName("Quejarse de una donación sin entregar sube el motivo del módulo como conflicto")
+  void quejaSobreDonacionSinEntregar() {
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones/4/quejas"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(
+            withStatus(HttpStatus.CONFLICT)
+                .body(
+                    "{\"error\":\"No se puede registrar la queja: la donación 4 todavía no fue"
+                        + " entregada (estado actual: INGRESADA). Solo se aceptan quejas sobre"
+                        + " donaciones entregadas (ACEPTADA).\"}")
+                .contentType(MediaType.APPLICATION_JSON));
+
+    RuntimeException e =
+        assertThrows(
+            RuntimeException.class, () -> operaciones.registrarQueja("4", "Llegó en mal estado"));
+
+    assertTrue(e.getMessage().contains("conflicto con el estado actual"));
+    assertTrue(
+        e.getMessage().contains("todavía no fue entregada (estado actual: INGRESADA)"),
+        "el MCP no valida el estado: el motivo lo pone Donaciones y tiene que llegar entero");
+    assertFalse(e.getMessage().contains("error :"), "el envoltorio JSON no aporta nada al leerlo");
+  }
+
+  @Test
+  @DisplayName("La descripción de registrar_queja avisa que solo se puede quejar de una donación entregada")
+  void descripcionDeLaQueja() throws Exception {
+    String descripcion =
+        OperacionTools.class
+            .getMethod("registrarQueja", String.class, String.class)
+            .getAnnotation(org.springframework.ai.tool.annotation.Tool.class)
+            .description();
+
+    assertTrue(descripcion.contains("ENTREGADA"), descripcion);
+    assertTrue(
+        descripcion.contains("reportar_entrega"), "tiene que decir cómo se llega a una entregada");
+    assertTrue(
+        descripcion.contains("con 5") && descripcion.contains("con 10"),
+        "los umbrales de la escalada son los del módulo Donadores");
+  }
+
+  @Test
+  @DisplayName("El guion de la demo pone la queja después de la entrega y explica cómo llegar a BANEADO")
+  void guionConQuejaSobreEntregada() {
+    String guion = new DemoTools(null, sesion).guionDemo();
+
+    assertTrue(
+        guion.indexOf("`reportar_entrega`") < guion.indexOf("`registrar_queja`"),
+        "la queja necesita una donación ya entregada");
+    assertTrue(guion.contains("donación entregada"));
+    assertTrue(guion.contains("hacen falta 10"), "con una sola donación no se llega a BANEADO");
   }
 
   @Test

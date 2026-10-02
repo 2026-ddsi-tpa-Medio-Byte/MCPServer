@@ -402,10 +402,13 @@ public class DemoTools {
         4. `estado_del_sistema` — para mostrar de dónde se parte.
 
         **Los seis flujos, en el orden en que se encadenan**
-        1. `registrar_necesidad` — una entidad pide algo. Si ya había stock, se asigna en el acto.
+        1. `registrar_necesidad` — una entidad pide algo. Si ya había stock, se asigna en el acto
+           (una RECURRENTE, solo si el stock la cubre entera).
         2. `registrar_donacion` — el flujo principal: toca Donaciones, Donadores y Logística.
-        3. `reportar_entrega` — recién acá la necesidad se da por satisfecha.
-        4. `registrar_queja` — la donación deja de estar aceptada y el donador acumula quejas.
+        3. `reportar_entrega` — recién acá la necesidad se da por satisfecha y la donación queda
+           ACEPTADA.
+        4. `registrar_queja` — sobre la donación entregada en el paso 3: solo se puede quejar de
+           una donación entregada. Pasa a CONQUEJA y el donador acumula la queja.
         5. `procesar_donador_en_incentivos` — evalúa la misión, otorga o quita la insignia.
         6. `consultar_estadisticas_donador` — cómo quedó el donador al final.
 
@@ -414,7 +417,11 @@ public class DemoTools {
 
         **Para mostrar las reglas que no se ven a simple vista**
         - Donar con un donador BANEADO: lo rechaza Donaciones. Se llega con
-          `cambiar_estado_donador` o acumulando quejas.
+          `cambiar_estado_donador`. Por quejas también, pero hacen falta 10 (con 5 queda
+          SOSPECHOSO), y cada una sobre una donación entregada distinta: donar y reportar la
+          entrega diez veces.
+        - Quejarse de una donación que todavía no se entregó: Donaciones la rechaza y dice en
+          qué estado está.
         - Donar menos de lo que pide una necesidad RECURRENTE: no se le asigna, va a stock.
         - Crear un producto con identificador QR y nombre de cantidad impar de letras: lo rechaza.
         """;

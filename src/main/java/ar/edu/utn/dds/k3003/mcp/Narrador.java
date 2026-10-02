@@ -277,9 +277,12 @@ class Narrador {
                       : ".")));
     }
 
+    // Los umbrales son los de Donador.actualizarEstadoSegunQuejas en Donadores. Se dicen en el
+    // relato porque es lo que el que mira pregunta; la escalada la sigue decidiendo el módulo.
     sb.append(
-        "\n> La escalada es por cantidad: alrededor de la octava queja pasa a SOSPECHOSO y cerca "
-            + "de la undécima queda BANEADO.\n");
+        "\n> La escalada es por cantidad: con 5 quejas el donador pasa a SOSPECHOSO y con 10 queda "
+            + "BANEADO. Cada queja tiene que ser sobre una donación entregada distinta: una "
+            + "donación admite una sola queja.\n");
     sb.append(pie(antes, despues, "procesar_donador_en_incentivos"));
     return sb.toString();
   }
@@ -290,6 +293,19 @@ class Narrador {
     StringBuilder sb = new StringBuilder();
     sb.append(encabezado("Necesidad registrada", traza, "Donadores"));
 
+    // Lo cubierto sale de la necesidad releída: la respuesta del alta no lo trae, y mostrar el 0
+    // de un campo ausente sería afirmar algo que no se vio.
+    JsonNode guardada = despues.necesidad;
+    String progreso =
+        guardada != null
+            ? barra(guardada)
+                + " "
+                + numero(guardada, "cantidadActual")
+                + "/"
+                + numero(guardada, "cantidadObjetivo")
+            : "pide "
+                + numero(creada, "cantidadObjetivo")
+                + " unidades (no se pudo releer cuánto quedó cubierto)";
     sb.append(
         linea(
             "Donadores",
@@ -298,11 +314,7 @@ class Narrador {
                 + " «"
                 + texto(creada, "descripcion")
                 + "»: "
-                + barra(creada)
-                + " "
-                + numero(creada, "cantidadActual")
-                + "/"
-                + numero(creada, "cantidadObjetivo")
+                + progreso
                 + ", tipo "
                 + texto(creada, "tipo")
                 + ", urgencia "
@@ -314,35 +326,110 @@ class Narrador {
             "validó que el producto nº "
                 + texto(creada, "productoSolicitadoID")
                 + " exista antes de aceptar la necesidad."));
-
-    if (antes.stock == null || despues.stock == null) {
-      sb.append(linea("Logística", "no se pudo leer el stock, así que no se ve si había reservas."));
-    } else if (despues.stock < antes.stock) {
-      sb.append(
-          linea(
-              "Logística",
-              "stock del producto: "
-                  + antes.stock
-                  + " → "
-                  + despues.stock
-                  + ". Había donaciones guardadas y se asignaron en el momento, sin esperar una "
-                  + "donación nueva."));
-    } else {
-      sb.append(
-          linea(
-              "Logística",
-              "stock del producto: "
-                  + antes.stock
-                  + " → "
-                  + despues.stock
-                  + ". No había nada guardado, así que la necesidad queda esperando una donación."));
-    }
+    sb.append(linea("Logística", stockAlCrear(creada, antes, despues)));
 
     sb.append(
         "\n> Una necesidad EXTRAORDINARIA acepta que le asignen menos de lo que pide; una "
-            + "RECURRENTE solo acepta que la cubran del todo.\n");
+            + "RECURRENTE solo acepta que la cubran del todo. Lo que se toma del stock al crearla "
+            + "se registra solo si Logística confirma la asignación.\n");
     sb.append(pie(antes, despues, "registrar_donacion"));
     return sb.toString();
+  }
+
+  /**
+   * Si a la necesidad nueva se le asignó stock que ya estaba guardado, y si no, por qué.
+   *
+   * <p>El dato es lo cubierto, no el stock: Donadores registra lo asignado solo cuando Logística lo
+   * confirma. Que el stock no haya bajado no quiere decir que no hubiera nada guardado, que es lo
+   * que se decía antes: con stock disponible, una RECURRENTE que no queda cubierta entera no se
+   * asigna, y si Logística no confirma la necesidad también se crea en 0.
+   */
+  private static String stockAlCrear(JsonNode creada, Panorama antes, Panorama despues) {
+    String stock =
+        antes.stock == null || despues.stock == null
+            ? ""
+            : "stock del producto: " + antes.stock + " → " + despues.stock + ". ";
+    JsonNode guardada = despues.necesidad;
+
+    if (guardada == null) {
+      if (antes.stock == null) {
+        return "no se pudo leer el stock ni releer la necesidad, así que no se ve si se le asignó "
+            + "algo.";
+      }
+      if (antes.stock == 0) {
+        return stock + "No había nada guardado, así que la necesidad queda esperando una donación.";
+      }
+      return stock
+          + "Había unidades guardadas, pero no se pudo releer la necesidad, así que no se puede "
+          + "afirmar si se le asignaron.";
+    }
+
+    int cubierta = numero(guardada, "cantidadActual");
+    int objetivo = numero(guardada, "cantidadObjetivo");
+    if (cubierta > 0) {
+      return stock
+          + "Había donaciones guardadas: Logística confirmó la asignación y la necesidad arrancó con "
+          + cubierta
+          + " unidades cubiertas, sin esperar una donación nueva.";
+    }
+    if (antes.stock == null) {
+      return "no se pudo leer el stock, así que no se ve si había reservas. La necesidad quedó en 0/"
+          + objetivo
+          + ".";
+    }
+    if (antes.stock == 0) {
+      return stock + "No había nada guardado, así que la necesidad queda esperando una donación.";
+    }
+    return stock
+        + "Había "
+        + antes.stock
+        + " unidades guardadas, pero la necesidad quedó en 0/"
+        + objetivo
+        + ": no se le asignó nada. "
+        + causasSinAsignar(
+            texto(guardada, "tipo").isBlank() ? texto(creada, "tipo") : texto(guardada, "tipo"),
+            antes.stock,
+            objetivo);
+  }
+
+  /**
+   * Por qué una necesidad con stock disponible pudo quedar en 0.
+   *
+   * <p>No se elige una sola causa: desde afuera no se ve si Donadores le pidió la asignación a
+   * Logística ni qué le contestó. Lo que sí se puede es descartar la regla de las RECURRENTE cuando
+   * no aplica, para no mandar a buscar el problema donde no está.
+   */
+  private static String causasSinAsignar(String tipo, int stock, int objetivo) {
+    String logistica =
+        "que Logística no haya confirmado la asignación o no haya informado el stock a tiempo: en "
+            + "ese caso Donadores crea la necesidad en 0 para no contar unidades que nadie apartó";
+    String regla =
+        "una RECURRENTE solo se asigna si el stock la cubre entera, y si no ni se le pide nada a "
+            + "Logística";
+    if ("RECURRENTE".equalsIgnoreCase(tipo) && stock < objetivo) {
+      return "Las causas posibles son dos: que el stock no alcance para las "
+          + objetivo
+          + " unidades que pide —"
+          + regla
+          + "—, o "
+          + logistica
+          + ".";
+    }
+    if (tipo.isBlank()) {
+      return "Las causas posibles son dos: que sea RECURRENTE y el stock no alcance para cubrirla "
+          + "—"
+          + regla
+          + "—, o "
+          + logistica
+          + ".";
+    }
+    String reglaQueNoAplica =
+        "RECURRENTE".equalsIgnoreCase(tipo)
+            ? "el stock alcanzaba para cubrirla entera"
+            : "es EXTRAORDINARIA y acepta que le asignen una parte";
+    return "La regla del tipo no lo impedía (" + reglaQueNoAplica + "), así que lo más probable es "
+        + logistica
+        + ".";
   }
 
   // ── Incentivos ─────────────────────────────────────────────────────────────

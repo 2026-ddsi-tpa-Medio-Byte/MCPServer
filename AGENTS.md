@@ -72,4 +72,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-40 tests, 0 fallos.
+53 tests, 0 fallos.

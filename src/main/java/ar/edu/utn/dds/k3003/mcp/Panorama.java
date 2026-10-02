@@ -119,6 +119,29 @@ class Panorama {
     return p;
   }
 
+  /**
+   * Lo mismo, más la necesidad recién creada tal como quedó guardada.
+   *
+   * <p>La respuesta del alta es el DTO de cátedra, que no trae lo cubierto ({@code
+   * cantidadActual}). Sin volver a pedirla, el relato no sabría si se le asignó stock al crearla y
+   * mostraría un 0 que nadie vio. Que el stock baje tampoco alcanza: con stock disponible, una
+   * RECURRENTE que no queda cubierta entera no se asigna, y si Logística no confirma tampoco.
+   */
+  static Panorama despuesDeNecesidad(DonaTrackApi api, String productoId, String necesidadId) {
+    Panorama p = new Panorama(api);
+    p.aLaVez(
+        () -> p.stock = p.leerStock(productoId),
+        () -> p.necesidadesDelProducto = p.leerLista(productoId),
+        () -> {
+          // Sin número no se pregunta: pedir /necesidades/ no trae la que se acaba de crear.
+          if (!necesidadId.isBlank()) {
+            p.necesidad =
+                p.leer("Donadores", () -> api.getDonadores("/necesidades/" + necesidadId));
+          }
+        });
+    return p;
+  }
+
   /** Para el procesamiento en Incentivos importan la categoría, las insignias y la misión. */
   static Panorama deIncentivos(DonaTrackApi api, String donadorId) {
     Panorama p = new Panorama(api);

@@ -161,9 +161,11 @@ public class OperacionTools {
       description =
           "Registra lo que necesita una entidad. Valida contra Donaciones que el producto exista "
               + "y le consulta el stock a Logística: si ya hay unidades disponibles, se asignan "
-              + "en el momento sin esperar una donación nueva. El tipo puede ser EXTRAORDINARIA "
-              + "(acepta que le asignen menos de lo pedido) o RECURRENTE (solo acepta que la "
-              + "cubran del todo).")
+              + "en el momento sin esperar una donación nueva, pero solo si Logística confirma la "
+              + "asignación. El tipo puede ser EXTRAORDINARIA (acepta que le asignen menos de lo "
+              + "pedido) o RECURRENTE (solo acepta que la cubran del todo: si el stock no alcanza "
+              + "para cubrirla entera, queda en 0). Devuelve un resumen ya redactado que dice si "
+              + "se le asignó stock: mostrarlo tal cual.")
   public String registrarNecesidad(
       @ToolParam(description = "Número de la entidad que necesita") String entidadId,
       @ToolParam(description = "Número del producto que se necesita") String productoId,
@@ -175,6 +177,8 @@ public class OperacionTools {
     String producto = productoId.trim();
     return conRelato(
         () -> Panorama.deNecesidad(api, producto),
+        // Después se relee la necesidad creada: es lo único que dice si se le asignó stock.
+        creada -> Panorama.despuesDeNecesidad(api, producto, Panorama.texto(creada, "id")),
         () ->
             api.postDonadores(
                 "/necesidades",
@@ -191,12 +195,20 @@ public class OperacionTools {
   @Tool(
       name = "registrar_queja",
       description =
-          "Registra una queja sobre una donación ya entregada. Tiene dos efectos: la donación "
-              + "deja de estar ACEPTADA y el donador acumula la queja, lo que puede bajarle la "
-              + "reputación hasta dejarlo baneado. También puede hacerle perder insignias que "
-              + "hubiera ganado.")
+          "Registra una queja sobre una donación. Solo se puede quejar de una donación "
+              + "ENTREGADA (estado ACEPTADA): si todavía está INGRESADA, primero hay que reportar "
+              + "su entrega con 'reportar_entrega'; si ya está CONQUEJA, ya tiene su queja y no "
+              + "admite otra. En esos casos Donaciones la rechaza y su mensaje dice el estado "
+              + "actual: transmitirlo tal cual. Tiene dos efectos: la donación pasa a CONQUEJA y "
+              + "el donador acumula la queja; con 5 pasa a SOSPECHOSO y con 10 queda BANEADO, así "
+              + "que para llegar ahí hace falta una donación entregada por cada queja. También "
+              + "puede hacerle perder insignias que hubiera ganado.")
   public String registrarQueja(
-      @ToolParam(description = "Número de la donación sobre la que se reclama") String donacionId,
+      @ToolParam(
+              description =
+                  "Número de la donación sobre la que se reclama. Tiene que estar entregada "
+                      + "(ACEPTADA).")
+          String donacionId,
       @ToolParam(description = "Qué pasó con esa donación") String descripcion) {
     sesion.requerirLogin("registrar una queja");
     String donacion = donacionId.trim();
@@ -339,8 +351,8 @@ public class OperacionTools {
       description =
           "Cambia a mano el estado de un donador: VERIFICADO, SOSPECHOSO o BANEADO. Normalmente "
               + "el estado lo maneja el sistema según las quejas que acumula, pero para mostrar "
-              + "que un donador baneado no puede donar conviene forzarlo en vez de cargar once "
-              + "quejas.")
+              + "que un donador baneado no puede donar conviene forzarlo en vez de cargar diez "
+              + "quejas, que exigen diez donaciones entregadas.")
   public String cambiarEstadoDonador(
       @ToolParam(description = "Número del donador") String donadorId,
       @ToolParam(description = "VERIFICADO, SOSPECHOSO o BANEADO") String estado) {
