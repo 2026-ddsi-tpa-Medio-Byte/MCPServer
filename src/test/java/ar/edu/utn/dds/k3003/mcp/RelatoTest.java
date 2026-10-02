@@ -2,6 +2,7 @@ package ar.edu.utn.dds.k3003.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -353,6 +354,179 @@ class RelatoTest {
     sesion.cerrarSesion();
     org.junit.jupiter.api.Assertions.assertThrows(
         IllegalStateException.class, () -> demo.reiniciarSistema());
+  }
+
+  // ── Reiniciar y preparar un módulo solo ────────────────────────────────────
+
+  @Test
+  @DisplayName("Reiniciar un módulo borra solo ese y avisa qué queda inconsistente")
+  void reiniciarUnModulo() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/limpiar-base"))
+        .andExpect(method(HttpMethod.DELETE))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    String salida = demo.reiniciarModulo("Logística");
+
+    // Si hubiera tocado otro módulo, el servidor simulado habría fallado por pedido inesperado.
+    servidor.verify();
+    assertTrue(salida.contains("Logística reiniciado"));
+    assertTrue(
+        salida.contains("quedaron como estaban"), "hay que decir que los otros tres no se tocaron");
+    assertTrue(
+        salida.contains("depósito por defecto"), "y que sin el depósito las donaciones fallan");
+  }
+
+  @Test
+  @DisplayName("Un módulo que no existe no borra nada y dice cuáles hay")
+  void moduloQueNoExiste() {
+    IllegalArgumentException error =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            IllegalArgumentException.class, () -> demo.reiniciarModulo("logisitca"));
+
+    servidor.verify();
+    assertTrue(error.getMessage().contains("donaciones"), "el error tiene que listar los que hay");
+  }
+
+  @Test
+  @DisplayName("Preparar un solo módulo no escribe en los otros tres")
+  void prepararUnSoloModulo() {
+    SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    // La consulta de siempre antes de escribir: en Render el primer pedido a un servicio dormido
+    // se pierde, y un POST perdido no se puede reintentar.
+    servidor
+        .expect(requestTo(LOGISTICA + "/depositos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/depositos"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    String salida = seed.prepararModulo("logistica", null);
+
+    servidor.verify();
+    assertTrue(salida.contains("DEP-UTN-01"), "tiene que decir con qué depósito quedó");
+  }
+
+  @Test
+  @DisplayName("Preparar donadores con un producto dado no crea ninguno en Donaciones")
+  void prepararDonadoresConProductoDado() {
+    SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    servidor
+        .expect(requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"3"}
+                """,
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/entidades"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"5"}
+                """,
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/necesidades"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"entidadID":"5","productoSolicitadoID":"7","cantidadObjetivo":20,
+                     "tipo":"EXTRAORDINARIA"}
+                    """))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"9"}
+                """,
+                MediaType.APPLICATION_JSON));
+
+    String salida = seed.prepararModulo("donadores", "7");
+
+    servidor.verify();
+    assertTrue(salida.contains("necesidad nº 9"), "tiene que decir con qué necesidad quedó");
+  }
+
+  @Test
+  @DisplayName("Sin productos cargados se cargan donador y entidad, y se avisa de la necesidad")
+  void prepararDonadoresSinProductos() {
+    SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    servidor
+        .expect(requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/donadores"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"3"}
+                """,
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/entidades"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"5"}
+                """,
+                MediaType.APPLICATION_JSON));
+    // Una necesidad pide un producto, y Donaciones no tiene ninguno.
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONACIONES + "/productos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
+    String salida = seed.prepararModulo("donadores", null);
+
+    // Si hubiera intentado crear la necesidad, el servidor habría fallado por pedido inesperado.
+    servidor.verify();
+    assertTrue(salida.contains("donador nº 3"), "lo que sí se pudo cargar tiene que figurar");
+    assertTrue(salida.contains("entidad nº 5"));
+    assertTrue(
+        salida.contains("la necesidad quedó sin cargar"), "y lo que faltó, dicho sin rodeos");
+    assertTrue(salida.contains("preparar_modulo"), "con cómo resolverlo");
+  }
+
+  @Test
+  @DisplayName("Si el módulo no despertó, preparar ese módulo no escribe nada")
+  void prepararModuloDormido() {
+    SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(INCENTIVOS + "/insignias"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+    String salida = seed.prepararModulo("incentivos", null);
+
+    servidor.verify();
+    assertTrue(salida.contains("No se cargó nada"));
+    assertTrue(salida.contains("Incentivos"), "hay que decir cuál no contestó");
+    assertTrue(salida.contains("despertar_servicios"), "y cómo resolverlo");
+  }
+
+  @Test
+  @DisplayName("Preparar un módulo sin ser admin no carga nada")
+  void prepararModuloSinPermiso() {
+    SeedTools seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    sesion.cerrarSesion();
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalStateException.class, () -> seed.prepararModulo("logistica", null));
+    servidor.verify();
   }
 
   @Test

@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
 
 /**
@@ -144,6 +145,78 @@ public class DemoTools {
         (modulo, resultado) -> sb.append("- **").append(modulo).append("** — ").append(resultado).append("\n"));
     sb.append("\nSiguiente paso: `preparar_demo`, que carga las precondiciones de los flujos.\n");
     return sb.toString();
+  }
+
+  @Tool(
+      name = "reiniciar_modulo",
+      description =
+          "Borra los datos de UN solo módulo y deja los otros tres como estaban. Sirve para "
+              + "volver a empezar una parte de la demostración sin perder lo que ya está cargado "
+              + "en el resto. Es destructivo y no se puede deshacer: usarlo solo si el usuario lo "
+              + "pide. Para vaciar los cuatro de una vez está 'reiniciar_sistema'. Requiere "
+              + "ADMIN. El resultado ya viene redactado: mostrarlo tal cual.")
+  public String reiniciarModulo(
+      @ToolParam(description = "Cuál módulo borrar: donaciones, donadores, logistica o incentivos.")
+          String modulo) {
+    sesion.requerirAdmin("reiniciar un módulo");
+    Modulo m = Modulo.desde(modulo);
+
+    // Un solo pedido, así que no hace falta el plazo en paralelo del reinicio completo: el límite
+    // de lectura del RestTemplate corta antes del minuto que aguanta una herramienta.
+    String resultado = intentar(() -> borrar(m));
+
+    return "**"
+        + m.nombre()
+        + " reiniciado**\n\n- "
+        + queBorra(m)
+        + " — "
+        + resultado
+        + "\n\nLos otros tres módulos quedaron como estaban.\n\n> "
+        + consecuencia(m)
+        + "\n";
+  }
+
+  private String borrar(Modulo m) {
+    return switch (m) {
+      case DONACIONES -> api.deleteDonaciones("/donaciones/reset");
+      case DONADORES -> api.deleteDonadores("/reset");
+      case LOGISTICA -> api.deleteLogistica("/api/limpiar-base");
+      case INCENTIVOS -> api.postIncentivos("/admin/clear", null);
+    };
+  }
+
+  private String queBorra(Modulo m) {
+    return switch (m) {
+      case DONACIONES -> "donaciones, productos e identificadores";
+      case DONADORES -> "donadores, entidades y necesidades";
+      case LOGISTICA -> "depósitos, stock y asignaciones";
+      case INCENTIVOS -> "insignias, misiones y progreso";
+    };
+  }
+
+  /**
+   * Lo que queda inconsistente por haber borrado un módulo solo.
+   *
+   * <p>Los módulos se referencian por identificador y ninguno valida contra la base del otro, así
+   * que vaciar uno deja a los demás apuntando a cosas que ya no existen. No es un error del
+   * reinicio, pero quien está demostrando tiene que saberlo antes de que un flujo falle en
+   * pantalla.
+   */
+  private String consecuencia(Modulo m) {
+    return switch (m) {
+      case DONACIONES ->
+          "Las necesidades de Donadores quedan pidiendo productos que ya no existen: donar va a "
+              + "fallar hasta que haya un producto nuevo y una necesidad que lo pida.";
+      case DONADORES ->
+          "Las donaciones quedan a nombre de donadores que ya no existen, y no hay ninguna "
+              + "necesidad a la que asignar lo que se done.";
+      case LOGISTICA ->
+          "Se borró también el depósito por defecto, así que donar va a fallar hasta volver a "
+              + "crearlo: `preparar_modulo` con logistica lo deja listo.";
+      case INCENTIVOS ->
+          "Los donadores siguen existiendo, pero sin insignias ni misiones no hay nada que "
+              + "procesar: `preparar_modulo` con incentivos vuelve a cargarlas.";
+    };
   }
 
   private String intentar(Supplier<String> operacion) {

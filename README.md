@@ -33,7 +33,7 @@ Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
 ventana.
 
-Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 32
+Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 34
 tools disponibles.
 
 ## Las herramientas
@@ -91,7 +91,9 @@ vista de quien pregunta es la misma intención.
 | `guion_demo` | El orden sugerido para mostrar el sistema |
 | `despertar_servicios` | Sacar del sueño a los cuatro módulos de Render |
 | `reiniciar_sistema` | Vaciar las cuatro bases |
+| `reiniciar_modulo` | Vaciar un módulo solo, dejando los otros tres como estaban |
 | `preparar_demo` | Cargar las precondiciones de todos los flujos |
+| `preparar_modulo` | Cargar las precondiciones de un módulo solo |
 | `estado_del_sistema` | Cómo está todo ahora, módulo por módulo |
 
 ## Las operaciones cuentan qué provocaron

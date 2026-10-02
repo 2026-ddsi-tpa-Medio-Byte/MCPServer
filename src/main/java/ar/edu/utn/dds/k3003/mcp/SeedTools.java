@@ -172,6 +172,151 @@ public class SeedTools {
     return despiertos;
   }
 
+  @Tool(
+      name = "preparar_modulo",
+      description =
+          "Carga las precondiciones de UN solo módulo, sin tocar los otros tres: identificador y "
+              + "producto en Donaciones; donador, entidad y necesidad en Donadores; el depósito "
+              + "por defecto en Logística; insignia y misión en Incentivos. Sirve cuando falta "
+              + "solo una parte, o cuando un módulo estaba dormido y 'preparar_demo' no cargó "
+              + "nada. Para cargar los cuatro de una vez está 'preparar_demo'. Requiere ADMIN. "
+              + "El resultado ya viene redactado: mostrarlo tal cual.")
+  public String prepararModulo(
+      @ToolParam(description = "Cuál módulo cargar: donaciones, donadores, logistica o incentivos.")
+          String modulo,
+      @ToolParam(
+              required = false,
+              description =
+                  "Solo para donadores: el producto que va a pedir la necesidad. Si no se indica "
+                      + "se usa el primero que tenga Donaciones; si no hay ninguno se cargan el "
+                      + "donador y la entidad, y se avisa que la necesidad quedó sin cargar.")
+          String productoId) {
+
+    sesion.requerirAdmin("preparar un módulo");
+    Modulo m = Modulo.desde(modulo);
+
+    // Igual que en preparar_demo: si se arranca escribiendo, el primer POST se pierde despertando
+    // al servicio y no se puede reintentar sin arriesgar un duplicado.
+    if (!despierto(m)) {
+      return "**No se cargó nada en "
+          + m.nombre()
+          + "**\n\nTodavía no contesta. Arrancar de cero le lleva a Render uno o dos minutos. "
+          + "Ejecutá `despertar_servicios` hasta que responda y volvé a intentar.\n";
+    }
+
+    long suf = Instant.now().getEpochSecond();
+    StringBuilder sb = new StringBuilder("**Precondiciones de " + m.nombre() + "**\n\n");
+    try {
+      switch (m) {
+        case DONACIONES -> {
+          String identId = crearIdentificador(sb, suf);
+          String prodId = crearProducto(sb, suf, identId);
+          sb.append("\n**Para usar en los flujos**\n\n- Producto nº ").append(prodId).append("\n");
+          sb.append(
+              "\nSiguiente paso: `preparar_modulo` con donadores, para que haya una necesidad "
+                  + "que pida ese producto.\n");
+        }
+        case DONADORES -> prepararDonadores(sb, suf, productoId);
+        case LOGISTICA -> {
+          crearDeposito(sb, suf);
+          sb.append("\n**Para usar en los flujos**\n\n- Depósito ")
+              .append(depositoPorDefecto)
+              .append("\n");
+        }
+        case INCENTIVOS -> {
+          String[] ids = crearInsigniaYMision(sb, suf);
+          sb.append("\n**Para usar en los flujos**\n\n- Insignia ")
+              .append(ids[0])
+              .append("\n- Misión ")
+              .append(ids[1])
+              .append("\n");
+        }
+      }
+      return sb.toString();
+    } catch (Exception e) {
+      log.error("Error preparando {}", m.nombre(), e);
+      return sb + "\n⚠️ Se cortó acá: " + e.getMessage();
+    }
+  }
+
+  /**
+   * El donador, la entidad y la necesidad que les da sentido.
+   *
+   * <p>La necesidad pide un producto, que vive en Donaciones: por eso se acepta como parámetro y,
+   * si no viene, se busca el primero que haya. Si no hay ninguno se cargan igual el donador y la
+   * entidad —sirven para otros flujos— y se dice qué quedó sin cargar, en vez de no cargar nada.
+   */
+  private void prepararDonadores(StringBuilder sb, long suf, String productoId) throws Exception {
+    String donadorId = crearDonador(sb, suf);
+    String entidadId = crearEntidad(sb, suf);
+
+    String prodId =
+        productoId != null && !productoId.isBlank() ? productoId.trim() : primerProducto();
+    if (prodId == null) {
+      sb.append("- **Donadores** — ⚠️ la necesidad quedó sin cargar: pide un producto y ")
+          .append("Donaciones no tiene ninguno, o no contestó.\n")
+          .append("\n**Para usar en los flujos**\n\n- Donador nº ")
+          .append(donadorId)
+          .append("\n- Entidad nº ")
+          .append(entidadId)
+          .append("\n")
+          .append("\nSiguiente paso: `preparar_modulo` con donaciones y volver a correr este, ")
+          .append("o pasarle el producto a mano.\n");
+      return;
+    }
+
+    String necesidadId = crearNecesidad(sb, entidadId, prodId);
+    sb.append("\n**Para usar en los flujos**\n\n- Donador nº ")
+        .append(donadorId)
+        .append("\n- Entidad nº ")
+        .append(entidadId)
+        .append("\n- Producto nº ")
+        .append(prodId)
+        .append("\n- Necesidad nº ")
+        .append(necesidadId)
+        .append(" (20 unidades, EXTRAORDINARIA)\n");
+  }
+
+  /** El primer producto que tenga Donaciones, o null si no hay ninguno o no contestó. */
+  private String primerProducto() {
+    try {
+      JsonNode productos = mapper.readTree(api.getDonaciones("/productos"));
+      if (productos.isArray() && !productos.isEmpty()) {
+        String id = productos.get(0).path("id").asText("");
+        return id.isBlank() ? null : id;
+      }
+    } catch (Exception e) {
+      log.info("No se pudieron leer los productos para la necesidad: {}", e.getMessage());
+    }
+    return null;
+  }
+
+  /** Una consulta barata al módulo, con el mismo plazo corto que usa preparar_demo. */
+  private boolean despierto(Modulo m) {
+    return java.util.concurrent.CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                consultaBarata(m);
+                return true;
+              } catch (Exception e) {
+                log.info("{} dormido o caído: {}", m.nombre(), e.getMessage());
+                return false;
+              }
+            },
+            Hilos.ESPERA)
+        .completeOnTimeout(false, ESPERA_MAXIMA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS)
+        .join();
+  }
+
+  private void consultaBarata(Modulo m) {
+    switch (m) {
+      case DONACIONES -> api.getDonaciones("/productos");
+      case DONADORES -> api.getDonadores("/donadores");
+      case LOGISTICA -> api.getLogistica("/depositos");
+      case INCENTIVOS -> api.getIncentivos("/insignias");
+    }
+  }
+
   // ── Precondiciones ─────────────────────────────────────────────────────────
 
   private String crearIdentificador(StringBuilder sb, long suf) throws Exception {
