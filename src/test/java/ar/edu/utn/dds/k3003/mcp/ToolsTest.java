@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.test.json.JsonCompareMode;
+import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
@@ -47,7 +49,8 @@ class ToolsTest {
     // de lo que quiere probar. El relato se prueba aparte, en RelatoTest.
     operaciones = new OperacionTools(api, "DEP-UTN-01", sesion, false);
     auth = new AuthTools(sesion, api, "admin123");
-    seed = new SeedTools(api, sesion, "DEP-UTN-01");
+    // Sin espera entre intentos: con los dos segundos reales, cada test del paquete tardaría 18.
+    seed = new SeedTools(api, sesion, "DEP-UTN-01", 0);
   }
 
   // ── Consultas ──────────────────────────────────────────────────────────────
@@ -279,20 +282,82 @@ class ToolsTest {
   }
 
   @Test
-  @DisplayName("Reportar entrega en Logística arma el cuerpo esperado")
+  @DisplayName("Reportar una entrega le manda a Logística solo el paquete")
   void reportarEntrega() {
     servidor
         .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
         .andExpect(method(HttpMethod.POST))
-        .andExpect(
-            content()
-                .json(
-                    """
-                    {"paqueteid":"PAQ-1","donacionID":"5","productoid":"3","cantidad":10}
-                    """))
+        // Estricto: Logística saca lo demás de la asignación guardada, y un campo de más
+        // volvería a hacer que el modelo le pida al usuario datos que no se usan.
+        .andExpect(content().json("{\"paqueteid\":\"PAQ-1\"}", JsonCompareMode.STRICT))
         .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
 
-    operaciones.reportarEntrega("PAQ-1", "5", "3", 10);
+    operaciones.reportarEntrega("PAQ-1", null);
     servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Sin paquete ni donación se avisa antes de llamar a Logística")
+  void reportarEntregaSinDatos() {
+    assertThrows(IllegalArgumentException.class, () -> operaciones.reportarEntrega(null, " "));
+    servidor.verify();
+  }
+
+  // ── Seed: entrega del flujo completo ───────────────────────────────────────
+
+  @Test
+  @DisplayName("La seed espera a que el worker cree la asignación antes de reportar la entrega")
+  void seedEsperaAlWorker() {
+    servidor
+        .expect(ExpectedCount.times(2), requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-12"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withStatus(HttpStatus.NOT_FOUND).body("no existe"));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-12"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess("{\"paqueteid\":\"paq-12\"}", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(content().json("{\"paqueteid\":\"paq-12\"}", JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+    StringBuilder salida = new StringBuilder();
+
+    seed.reportarEntregaCuandoExista(salida, "12");
+
+    servidor.verify();
+    assertTrue(salida.toString().contains("paq-12 reportada"));
+  }
+
+  @Test
+  @DisplayName("Si el paquete nunca aparece, la seed avisa del worker y no reporta la entrega")
+  void seedSinPaqueteNoReporta() {
+    servidor
+        .expect(ExpectedCount.times(10), requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-12"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withStatus(HttpStatus.NOT_FOUND).body("no existe"));
+    StringBuilder salida = new StringBuilder();
+
+    seed.reportarEntregaCuandoExista(salida, "12");
+
+    // Si hubiera reportado igual, el servidor simulado habría fallado por pedido inesperado.
+    servidor.verify();
+    assertTrue(salida.toString().contains("la entrega no se reportó"));
+    assertTrue(salida.toString().contains("worker"), "hay que decir dónde mirar");
+  }
+
+  @Test
+  @DisplayName("Si Logística falla al consultar el paquete, la seed no insiste ni reporta")
+  void seedConLogisticaFallandoNoInsiste() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-12"))
+        .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR).body("boom"));
+    StringBuilder salida = new StringBuilder();
+
+    seed.reportarEntregaCuandoExista(salida, "12");
+
+    // Un error que no es 404 no se arregla esperando: insistir solo consumiría el plazo.
+    servidor.verify();
+    assertTrue(salida.toString().contains("No se pudo reportar la entrega de paq-12"));
   }
 }

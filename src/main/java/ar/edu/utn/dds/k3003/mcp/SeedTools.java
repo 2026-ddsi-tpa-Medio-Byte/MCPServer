@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -37,17 +38,43 @@ public class SeedTools {
    */
   private static final int ESPERA_MAXIMA_SEGUNDOS = 20;
 
+  /**
+   * Cuántas veces se pregunta por el paquete antes de reportar su entrega, y cada cuánto.
+   *
+   * <p>Logística procesa las donaciones en segundo plano: un worker toma el mensaje de la cola y
+   * recién ahí crea la asignación. Suele tardar un par de segundos; diez intentos cada dos
+   * segundos cubren una cola atrasada sin acercar la herramienta al corte de 60 segundos.
+   */
+  private static final int INTENTOS_PAQUETE = 10;
+
+  private static final long ESPERA_ENTRE_INTENTOS_MS = 2000;
+
+  /**
+   * Lo que se espera cada consulta del paquete. Con Logística despierta contesta en menos de un
+   * segundo; sin este límite, una sola consulta con su reintento podría tardar 50.
+   */
+  private static final int PACIENCIA_PAQUETE_SEGUNDOS = 4;
+
   private final DonaTrackApi api;
   private final SesionMcp sesion;
   private final String depositoPorDefecto;
+  private final long esperaEntreIntentosMs;
 
+  @Autowired
   public SeedTools(
       DonaTrackApi api,
       SesionMcp sesion,
       @Value("${donatrack.deposito-default:DEP-UTN-01}") String depositoPorDefecto) {
+    this(api, sesion, depositoPorDefecto, ESPERA_ENTRE_INTENTOS_MS);
+  }
+
+  /** Para los tests: con la espera real, probar que el paquete nunca aparece tardaría 18 segundos. */
+  SeedTools(
+      DonaTrackApi api, SesionMcp sesion, String depositoPorDefecto, long esperaEntreIntentosMs) {
     this.api = api;
     this.sesion = sesion;
     this.depositoPorDefecto = depositoPorDefecto;
+    this.esperaEntreIntentosMs = esperaEntreIntentosMs;
   }
 
   @Tool(
@@ -118,7 +145,8 @@ public class SeedTools {
       }
 
       sb.append("\n**Flujo completo ejecutado**\n\n");
-      ejecutarFlujo(sb, donadorId, prodId, incentivos[0], incentivos[1], suf);
+      ejecutarFlujo(
+          sb, donadorId, prodId, incentivos[0], incentivos[1], suf, despiertos.contains("Incentivos"));
       return sb.toString();
 
     } catch (Exception e) {
@@ -459,10 +487,15 @@ public class SeedTools {
    *
    * <p>Acá no se llama a Logística para que gestione la donación: eso ya lo hace Donaciones al
    * registrarla. Llamarla de nuevo, como se hacía antes, le entregaba la misma donación dos veces.
-   * El paquete se deduce del identificador de la donación, que es como lo arma Logística.
    */
   private void ejecutarFlujo(
-      StringBuilder sb, String donadorId, String prodId, String insId, String misId, long suf) {
+      StringBuilder sb,
+      String donadorId,
+      String prodId,
+      String insId,
+      String misId,
+      long suf,
+      boolean incentivosDespierto) {
     String donacionId;
     try {
       donacionId =
@@ -481,22 +514,14 @@ public class SeedTools {
       return;
     }
 
-    String paqueteId = "paq-" + donacionId;
-    try {
-      api.postLogistica(
-          "/api/asignaciones/reportar-entrega",
-          DonaTrackApi.cuerpo(
-              "paqueteid", paqueteId,
-              "donacionID", donacionId,
-              "productoid", prodId,
-              "cantidad", 10));
-      sb.append("- Entrega del paquete ").append(paqueteId).append(" reportada\n");
-    } catch (Exception e) {
-      sb.append("- ⚠️ No se pudo reportar la entrega de ")
-          .append(paqueteId)
-          .append(": ")
-          .append(e.getMessage())
-          .append("\n");
+    reportarEntregaCuandoExista(sb, donacionId);
+
+    // Mismo criterio que al cargar la insignia y la misión: si Incentivos no despertó, cada POST
+    // esperaría hasta darse por vencido y, sumado a la espera del worker, la herramienta pasaría
+    // el corte de 60 segundos.
+    if (!incentivosDespierto) {
+      sb.append("- ⚠️ Incentivos no respondió al despertarlo, así que el donador no se procesó.\n");
+      return;
     }
 
     try {
@@ -513,6 +538,90 @@ public class SeedTools {
       sb.append("- Donador procesado en Incentivos\n");
     } catch (Exception e) {
       sb.append("- ⚠️ Incentivos no respondió: ").append(e.getMessage()).append("\n");
+    }
+  }
+
+  /**
+   * Reporta la entrega del paquete de una donación, pero recién cuando Logística lo tiene.
+   *
+   * <p>Al registrar la donación, Donaciones ya le avisó a Logística, que la encola. El worker la
+   * procesa en segundo plano y recién ahí crea la asignación: mientras tanto el paquete da 404, y
+   * reportar la entrega antes de que exista falla. Por eso se pregunta hasta que aparezca.
+   *
+   * <p>Al endpoint se le manda solo el paquete: la donación, el producto y la cantidad Logística
+   * los saca de la asignación guardada, y cualquier otro campo lo ignora.
+   */
+  void reportarEntregaCuandoExista(StringBuilder sb, String donacionId) {
+    // Es el nombre que le pone el worker: no hay otra forma de llegar al paquete.
+    String paqueteId = "paq-" + donacionId;
+    try {
+      if (!esperarPaquete(paqueteId)) {
+        sb.append("- ⚠️ El paquete ")
+            .append(paqueteId)
+            .append(" no apareció en Logística después de ")
+            .append(INTENTOS_PAQUETE)
+            .append(" intentos, así que la entrega no se reportó. El worker que procesa la cola ")
+            .append("podría estar caído o atrasado. Cuando el paquete aparezca, se puede reportar ")
+            .append("con `reportar_entrega`.\n");
+        return;
+      }
+      api.postLogistica(
+          "/api/asignaciones/reportar-entrega", DonaTrackApi.cuerpo("paqueteid", paqueteId));
+      sb.append("- Entrega del paquete ").append(paqueteId).append(" reportada\n");
+    } catch (InterruptedException e) {
+      // Se respeta el pedido de cortar: no se reporta nada y la marca queda para quien siga.
+      Thread.currentThread().interrupt();
+      sb.append("- ⚠️ Se interrumpió la espera del paquete ")
+          .append(paqueteId)
+          .append(", así que la entrega no se reportó.\n");
+    } catch (Exception e) {
+      sb.append("- ⚠️ No se pudo reportar la entrega de ")
+          .append(paqueteId)
+          .append(": ")
+          .append(e.getMessage())
+          .append("\n");
+    }
+  }
+
+  /**
+   * Pregunta por el paquete hasta que exista. Devuelve false si después de todos los intentos
+   * sigue sin aparecer.
+   *
+   * <p>Solo un 404 quiere decir «todavía no»: es Logística contestando que el worker no terminó.
+   * Cualquier otro error es que Logística no anda, y seguir insistiendo consumiría el plazo de la
+   * herramienta sin cambiar nada, así que se corta ahí.
+   */
+  private boolean esperarPaquete(String paqueteId) throws InterruptedException {
+    for (int intento = 1; intento <= INTENTOS_PAQUETE; intento++) {
+      if (intento > 1) {
+        Thread.sleep(esperaEntreIntentosMs);
+      }
+      if (existePaquete(paqueteId)) {
+        return true;
+      }
+      log.info(
+          "El paquete {} todavía no existe (intento {} de {})", paqueteId, intento, INTENTOS_PAQUETE);
+    }
+    return false;
+  }
+
+  private boolean existePaquete(String paqueteId) throws InterruptedException {
+    try {
+      java.util.concurrent.CompletableFuture.supplyAsync(
+              () -> api.getLogistica("/api/asignaciones/paquetes/" + paqueteId), Hilos.ESPERA)
+          .get(PACIENCIA_PAQUETE_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS);
+      return true;
+    } catch (java.util.concurrent.ExecutionException e) {
+      if (e.getCause() instanceof DonaTrackApi.NoEncontrado) {
+        return false;
+      }
+      throw new IllegalStateException(
+          "No se pudo consultar el paquete. " + e.getCause().getMessage(), e.getCause());
+    } catch (java.util.concurrent.TimeoutException e) {
+      throw new IllegalStateException(
+          "Logística no contestó en "
+              + PACIENCIA_PAQUETE_SEGUNDOS
+              + " segundos al consultar el paquete.");
     }
   }
 

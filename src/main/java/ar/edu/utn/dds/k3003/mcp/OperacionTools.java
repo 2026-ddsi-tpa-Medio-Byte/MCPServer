@@ -397,35 +397,57 @@ public class OperacionTools {
   @Tool(
       name = "reportar_entrega",
       description =
-          "Reporta la entrega de un paquete en Logística. Requiere permisos de ADMIN. "
-              + "Al reportar la entrega, la donación pasa a ACEPTADA y se satisface la necesidad.")
+          "Reporta que el paquete de una donación llegó a destino. Requiere ADMIN. Solo hace "
+              + "falta saber cuál es el paquete: la donación, el producto y la cantidad Logística "
+              + "los saca de la asignación que ya tiene guardada, así que no hay que pedírselos "
+              + "al usuario. Si en vez del paquete se tiene el número de la donación, alcanza con "
+              + "eso. Recién al reportar la entrega la donación pasa a ACEPTADA y la necesidad "
+              + "suma lo entregado.")
   public String reportarEntrega(
       @ToolParam(
               required = false,
               description =
-                  "Código del paquete. Si se omite se deduce de la donación, que es como lo arma "
-                      + "Logística.")
+                  "Código del paquete, por ejemplo paq-12. Es el único dato que usa Logística.")
           String paqueteId,
-      @ToolParam(description = "Número de la donación asociada") String donacionId,
-      @ToolParam(description = "Número del producto entregado") String productoId,
-      @ToolParam(description = "Cantidad de unidades entregadas") int cantidad) {
+      @ToolParam(
+              required = false,
+              description =
+                  "Número de la donación, solo si no se tiene el código del paquete: Logística "
+                      + "nombra cada paquete paq- más el número de la donación.")
+          String donacionId) {
     sesion.requerirAdmin("reportar una entrega");
-    String donacion = donacionId.trim();
-    // Logística nombra cada paquete "paq-" + el id de la donación que lo originó. Pedirlo es
-    // una traba en la demostración: quien reporta la entrega tiene a mano la donación, no el
-    // paquete, y no hay forma de listarlos.
-    String paquete =
-        (paqueteId == null || paqueteId.isBlank()) ? "paq-" + donacion : paqueteId.trim();
+    String paquete = paqueteDe(paqueteId, donacionId);
     return conRelato(
-        () -> Panorama.deEntrega(api, paquete, donacion),
+        // La donación se deduce del paquete y no del parámetro: así el relato cuenta siempre lo
+        // del paquete que se reportó, aunque vinieran los dos y no coincidieran.
+        () -> Panorama.deEntrega(api, paquete, donacionDe(paquete)),
+        // Logística solo lee el paquete: lo demás lo saca de la asignación guardada.
         () ->
             api.postLogistica(
-                "/api/asignaciones/reportar-entrega",
-                DonaTrackApi.cuerpo(
-                    "paqueteid", paquete,
-                    "donacionID", donacion,
-                    "productoid", productoId.trim(),
-                    "cantidad", cantidad)),
+                "/api/asignaciones/reportar-entrega", DonaTrackApi.cuerpo("paqueteid", paquete)),
         (respuesta, antes, despues, traza) -> Narrador.entrega(antes, despues, traza));
+  }
+
+  /**
+   * Logística nombra cada paquete "paq-" + el id de la donación que lo originó. Aceptar la
+   * donación evita una traba en la demostración: quien reporta la entrega suele tener a mano la
+   * donación, no el paquete, y no hay forma de listarlos.
+   */
+  private static String paqueteDe(String paqueteId, String donacionId) {
+    if (paqueteId != null && !paqueteId.isBlank()) {
+      return paqueteId.trim();
+    }
+    if (donacionId != null && !donacionId.isBlank()) {
+      return "paq-" + donacionId.trim();
+    }
+    // No es una regla de negocio: sin ninguno de los dos no hay a quién reportar. Avisarlo antes
+    // de llamar deja que el modelo pida el dato que falta en vez de mostrar un error del módulo.
+    throw new IllegalArgumentException(
+        "Para reportar una entrega hace falta el código del paquete o el número de la donación.");
+  }
+
+  /** El camino inverso, solo para el relato. Vacío si el paquete no sigue la convención. */
+  private static String donacionDe(String paquete) {
+    return paquete.startsWith("paq-") ? paquete.substring("paq-".length()) : "";
   }
 }

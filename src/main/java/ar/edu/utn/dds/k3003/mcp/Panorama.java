@@ -68,13 +68,15 @@ class Panorama {
    * Para una entrega importa la necesidad que se cubre, el estado de la donación y el stock.
    *
    * <p>La necesidad no se pide por parámetro porque quien reporta la entrega conoce el paquete, no
-   * la necesidad: se la pregunta a Logística.
+   * la necesidad: se la pregunta a Logística. La donación puede venir vacía si el paquete no sigue
+   * la convención de nombre; en ese caso también se la pregunta a Logística.
    */
   static Panorama deEntrega(DonaTrackApi api, String paqueteId, String donacionId) {
     Panorama p = new Panorama(api);
-    p.aLaVez(
-        () -> p.leerAsignacion(paqueteId),
-        () -> p.donacion = p.leer("Donaciones", () -> api.getDonaciones("/donaciones/" + donacionId)));
+    p.aLaVez(() -> p.leerAsignacion(paqueteId), () -> p.leerDonacion(donacionId));
+    if (donacionId.isBlank()) {
+      p.leerDonacion(alguno(p.asignacion, "donacionID", "donacionid"));
+    }
     // La necesidad sale de la asignación y el producto de la donación: recién ahora se pueden pedir.
     String necesidadId = alguno(p.asignacion, "necesidadID", "necesidadid");
     String productoId = texto(p.donacion, "productoID");
@@ -209,6 +211,13 @@ class Panorama {
       }
     }
     return this;
+  }
+
+  /** Sin número no se pregunta: pedir {@code /donaciones/} traería el listado entero. */
+  private void leerDonacion(String donacionId) {
+    if (!donacionId.isBlank()) {
+      donacion = leer("Donaciones", () -> api.getDonaciones("/donaciones/" + donacionId));
+    }
   }
 
   /** Distingue «el paquete todavía no existe» de «Logística no contestó». */

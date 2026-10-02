@@ -242,7 +242,8 @@ class RelatoTest {
                  "cantidadActual":10}""",
                 MediaType.APPLICATION_JSON));
 
-    String relato = operaciones.reportarEntrega(null, "12", "3", 10);
+    // Solo el paquete: la donación que el relato necesita se deduce de su nombre.
+    String relato = operaciones.reportarEntrega("paq-12", null);
 
     assertTrue(relato.contains("INGRESADA → ACEPTADA"), "la donación recién ahora se da por buena");
     assertTrue(relato.contains("0/20"), "hay que mostrar de dónde venía la necesidad");
@@ -268,13 +269,39 @@ class RelatoTest {
         .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
         .andExpect(method(HttpMethod.POST))
         .andExpect(
-            org.springframework.test.web.client.match.MockRestRequestMatchers.content()
-                .string(Matchers.containsString("paq-5")))
+            content()
+                .json(
+                    "{\"paqueteid\":\"paq-5\"}",
+                    org.springframework.test.json.JsonCompareMode.STRICT))
         .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
 
-    operaciones.reportarEntrega(null, "5", "3", 10);
+    operaciones.reportarEntrega(null, "5");
 
     servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Si el paquete no se llama paq- más la donación, la donación se lee de la asignación")
+  void donacionDeLaAsignacion() {
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/api/asignaciones/paquetes/ENVIO-77"))
+        .andRespond(
+            withSuccess(
+                "{\"paqueteid\":\"ENVIO-77\",\"donacionid\":\"12\",\"estado\":\"ASIGNADA\"}",
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONACIONES + "/donaciones/12"))
+        .andRespond(
+            withSuccess("{\"id\":\"12\",\"estado\":\"INGRESADA\"}", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    String relato = operaciones.reportarEntrega("ENVIO-77", null);
+
+    servidor.verify();
+    assertTrue(relato.contains("donación nº 12"), "sin deducirla del nombre, se le pregunta a Logística");
   }
 
   // ── Queja ──────────────────────────────────────────────────────────────────
