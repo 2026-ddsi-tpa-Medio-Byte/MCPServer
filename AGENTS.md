@@ -42,7 +42,7 @@ o traer uno: para quien pregunta es la misma intención, y dar dos herramientas 
 que el modelo elija mal más seguido.
 
 ```
-ConsultaTools     11 tools de solo lectura
+ConsultaTools     12 tools de solo lectura
 OperacionTools    18 tools que modifican estado
 AuthTools          3 tools de sesión
 SeedTools          2 tools que cargan precondiciones (todo, o un módulo solo)
@@ -64,7 +64,7 @@ java -jar target/donatrack-mcp-1.0-SNAPSHOT.jar
 ```
 
 Enviando por stdin un `initialize` y después `tools/list` tiene que responder el handshake y las
-39 herramientas. Si imprime cualquier otra cosa en pantalla, eso está rompiendo el protocolo.
+40 herramientas. Si imprime cualquier otra cosa en pantalla, eso está rompiendo el protocolo.
 
 ## Antes de terminar un cambio
 
@@ -72,4 +72,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-64 tests, 0 fallos.
+66 tests, 0 fallos.

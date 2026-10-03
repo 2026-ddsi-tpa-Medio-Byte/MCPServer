@@ -195,7 +195,8 @@ public class OperacionTools {
   @Tool(
       name = "registrar_queja",
       description =
-          "Registra una queja sobre una donación. Solo se puede quejar de una donación "
+          "Registra una queja sobre una donación. Requiere ADMIN: es un reclamo contra un donador y "
+              + "no lo hace el propio donador. Solo se puede quejar de una donación "
               + "ENTREGADA (estado ACEPTADA): si todavía está INGRESADA, primero hay que reportar "
               + "su entrega con 'reportar_entrega'; si ya está CONQUEJA, ya tiene su queja y no "
               + "admite otra. En esos casos Donaciones la rechaza y su mensaje dice el estado "
@@ -210,7 +211,7 @@ public class OperacionTools {
                       + "(ACEPTADA).")
           String donacionId,
       @ToolParam(description = "Qué pasó con esa donación") String descripcion) {
-    sesion.requerirLogin("registrar una queja");
+    sesion.requerirAdmin("registrar una queja");
     String donacion = donacionId.trim();
     return conRelato(
         () -> Panorama.deQueja(api, donacion, null),

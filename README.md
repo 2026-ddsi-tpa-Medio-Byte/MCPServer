@@ -33,7 +33,7 @@ Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
 ventana.
 
-Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 39
+Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 40
 tools disponibles.
 
 ## Las herramientas
@@ -53,6 +53,7 @@ vista de quien pregunta es la misma intención.
 | `consultar_entidades` | Comedores, hogares y demás |
 | `consultar_necesidades` | Por número o por producto, con su progreso |
 | `consultar_productos` | El catálogo donable |
+| `consultar_identificadores` | Los identificadores (CODIGODEBARRAS o QR) que hacen falta para crear un producto |
 | `consultar_donaciones` | Todas, las de un donador, o una puntual |
 | `consultar_depositos_y_stock` | Depósitos con su stock real, el de uno por producto, o el de un producto |
 | `consultar_asignaciones` | Paquetes de Logística: por paquete, donación, estado o necesidad |
@@ -64,7 +65,7 @@ vista de quien pregunta es la misma intención.
 |---|---|
 | `registrar_donacion` | La operación central del sistema |
 | `registrar_necesidad` | Lo que necesita una entidad |
-| `registrar_queja` | Sobre una donación entregada |
+| `registrar_queja` | Sobre una donación entregada (requiere ADMIN) |
 | `crear_donador` | Alta de donador |
 | `crear_entidad` | Alta de entidad beneficiaria |
 | `crear_producto` | Alta de producto donable |

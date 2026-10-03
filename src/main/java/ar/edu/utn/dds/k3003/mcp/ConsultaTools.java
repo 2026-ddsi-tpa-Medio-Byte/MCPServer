@@ -133,10 +133,27 @@ public class ConsultaTools {
       return api.getDonaciones("/donaciones/" + donacionId.trim());
     }
     if (donadorId != null && !donadorId.isBlank()) {
-      // La API exige una fecha desde; se usa una vieja para que traiga todo el historial.
-      return api.getDonaciones("/donaciones?donadorID=" + donadorId.trim() + "&fecha=2020-01-01");
+      // Donaciones filtra por donador aunque no haya fecha: sin ella, trae todo su historial.
+      return api.getDonaciones("/donaciones?donadorID=" + donadorId.trim());
     }
     return api.getDonaciones("/donaciones");
+  }
+
+  @Tool(
+      name = "consultar_identificadores",
+      description =
+          "Los identificadores de producto (CODIGODEBARRAS o QR) ya creados. Sin parámetro "
+              + "devuelve todos; con un id devuelve ese identificador. Consultarlo antes de "
+              + "'crear_producto', que necesita el número de uno existente, y de ahí depende la "
+              + "regla que tiene que cumplir el producto.")
+  public String consultarIdentificadores(
+      @ToolParam(
+              required = false,
+              description = "Número del identificador. Vacío para traer todos.")
+          String identificadorId) {
+    boolean uno = identificadorId != null && !identificadorId.isBlank();
+    return api.getDonaciones(
+        uno ? "/identificadores/" + identificadorId.trim() : "/identificadores");
   }
 
   @Tool(

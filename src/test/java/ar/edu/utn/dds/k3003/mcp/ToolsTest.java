@@ -90,13 +90,29 @@ class ToolsTest {
   }
 
   @Test
-  @DisplayName("Las donaciones de un donador piden el histórico completo")
+  @DisplayName("Las donaciones de un donador se piden sin fecha: Donaciones trae todo el historial")
   void donacionesDeUnDonador() {
     servidor
-        .expect(requestTo(DONACIONES + "/donaciones?donadorID=1&fecha=2020-01-01"))
+        .expect(requestTo(DONACIONES + "/donaciones?donadorID=1"))
         .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
 
     consultas.consultarDonaciones(null, "1");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Sin id, los identificadores se listan todos; con id se trae ese")
+  void identificadores() {
+    servidor
+        .expect(requestTo(DONACIONES + "/identificadores"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONACIONES + "/identificadores/3"))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    consultas.consultarIdentificadores(null);
+    consultas.consultarIdentificadores(" 3 ");
 
     servidor.verify();
   }
@@ -685,6 +701,18 @@ class ToolsTest {
 
     operaciones.configurarAlgoritmoDeposito("DEP-UTN-01", "sub atendidos");
 
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Registrar una queja exige sesión de admin: un donador no reclama contra otros")
+  void quejaSinAdmin() {
+    sesion.iniciarComoDonador("1", "Carlos");
+
+    assertThrows(
+        IllegalStateException.class, () -> operaciones.registrarQueja("4", "No llegó nada"));
+
+    // No llegó a Donaciones.
     servidor.verify();
   }
 
