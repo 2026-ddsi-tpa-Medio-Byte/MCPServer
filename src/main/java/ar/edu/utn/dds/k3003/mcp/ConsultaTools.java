@@ -1,5 +1,11 @@
 package ar.edu.utn.dds.k3003.mcp;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.function.Supplier;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
@@ -14,6 +20,8 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class ConsultaTools {
+
+  private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private final DonaTrackApi api;
 
@@ -134,16 +142,88 @@ public class ConsultaTools {
   @Tool(
       name = "consultar_depositos_y_stock",
       description =
-          "Los depósitos de Logística con su capacidad, o el stock disponible de un producto. El "
-              + "stock es lo que quedó guardado de donaciones que no se asignaron a ninguna "
-              + "necesidad, o el sobrante de las que sí.")
+          "Los depósitos de Logística y el stock que guardan. El stock son las unidades de "
+              + "donaciones que no se asignaron a ninguna necesidad, más los sobrantes de las que "
+              + "sí. Usar un parámetro por vez. Sin parámetros devuelve todos los depósitos con "
+              + "nombre, id, dirección, capacidad, algoritmo y stockActual, que es el total real "
+              + "de unidades guardadas: alcanza para responder qué stock tiene cada depósito. Con "
+              + "depositoId devuelve los datos de ese depósito y su stock desglosado por "
+              + "producto; para el detalle por producto de todos, consultar cada depósito con su "
+              + "depositoId. Con productoId devuelve cuántas unidades hay de ese producto en "
+              + "cada depósito y el total. Con todoElStock en true devuelve lo mismo para todos "
+              + "los productos.")
   public String consultarLogistica(
-      @ToolParam(required = false, description = "Número del producto para ver su stock")
-          String productoId) {
-    if (productoId != null && !productoId.isBlank()) {
-      return api.getLogistica("/stock/" + productoId.trim());
+      @ToolParam(required = false, description = "Id del depósito, por ejemplo DEP-UTN-01")
+          String depositoId,
+      @ToolParam(required = false, description = "Número del producto, por ejemplo 3")
+          String productoId,
+      @ToolParam(
+              required = false,
+              description = "true para traer el stock de todos los productos. Por defecto false.")
+          Boolean todoElStock) {
+    // /depositos es el endpoint de integración con los otros módulos y trae stockActual siempre
+    // vacío: con él, el modelo concluía que los depósitos no tenían stock. Los /api traen el real.
+    if (hay(depositoId)) {
+      String id = depositoId.trim();
+      String[] respuestas =
+          aLaVez(
+              () -> api.getLogistica("/api/depositos/" + id),
+              () -> api.getLogistica("/api/depositos/" + id + "/stock"));
+      ObjectNode juntas = MAPPER.createObjectNode();
+      juntas.set("deposito", comoJson(respuestas[0]));
+      juntas.set("stock", comoJson(respuestas[1]));
+      return juntas.toString();
     }
-    return api.getLogistica("/depositos");
+    if (hay(productoId)) {
+      return api.getLogistica("/stock/" + productoId.trim() + "/detalle");
+    }
+    if (Boolean.TRUE.equals(todoElStock)) {
+      return api.getLogistica("/stock");
+    }
+    return api.getLogistica("/api/depositos");
+  }
+
+  @Tool(
+      name = "consultar_asignaciones",
+      description =
+          "Las asignaciones de Logística: qué paquete se armó para qué necesidad, con qué "
+              + "producto y cantidad, y si ya se entregó. Cada una trae asignacionid, paqueteid, "
+              + "necesidadid, fecha, estado, origen, donacionid, productoid y cantidad. El estado "
+              + "ASIGNADA significa pendiente de entrega y COMPLETADA, ya entregada. Para saber "
+              + "qué paquete reportar con 'reportar_entrega', buscar las que están en estado "
+              + "ASIGNADA. Usar un criterio por vez, salvo estado y necesidadId, que se pueden "
+              + "combinar. Sin parámetros devuelve todas.")
+  public String consultarAsignaciones(
+      @ToolParam(
+              required = false,
+              description = "Código del paquete, por ejemplo paq-12 o paq-solicitud-<uuid>")
+          String paqueteId,
+      @ToolParam(
+              required = false,
+              description =
+                  "Número de la donación, por ejemplo 12. Devuelve una lista: una donación puede "
+                      + "generar más de un paquete.")
+          String donacionId,
+      @ToolParam(
+              required = false,
+              description = "ASIGNADA (pendiente de entrega) o COMPLETADA (ya entregada)")
+          String estado,
+      @ToolParam(required = false, description = "Número de la necesidad, por ejemplo 7")
+          String necesidadId) {
+    if (hay(paqueteId)) {
+      return api.getLogistica("/api/asignaciones/paquetes/" + paqueteId.trim());
+    }
+    if (hay(donacionId)) {
+      return api.getLogistica("/api/asignaciones/donaciones/" + donacionId.trim());
+    }
+    StringBuilder filtros = new StringBuilder();
+    if (hay(estado)) {
+      filtros.append("estado=").append(estado.trim().toUpperCase());
+    }
+    if (hay(necesidadId)) {
+      filtros.append(filtros.isEmpty() ? "" : "&").append("necesidadid=").append(necesidadId.trim());
+    }
+    return api.getLogistica("/api/asignaciones" + (filtros.isEmpty() ? "" : "?" + filtros));
   }
 
   @Tool(
@@ -159,5 +239,38 @@ public class ConsultaTools {
           String que) {
     boolean misiones = que != null && que.toLowerCase().contains("mision");
     return api.getIncentivos(misiones ? "/misiones" : "/insignias");
+  }
+
+  private static boolean hay(String valor) {
+    return valor != null && !valor.isBlank();
+  }
+
+  /**
+   * Corre dos consultas a la vez y devuelve las dos respuestas.
+   *
+   * <p>En serie, con Logística dormida, cada una puede tardar 50 segundos con su reintento y la
+   * herramienta pasaría el corte de 60. Si alguna falla, sube el error tal como lo tradujo
+   * DonaTrackApi, sin el envoltorio del futuro.
+   */
+  private static String[] aLaVez(Supplier<String> una, Supplier<String> otra) {
+    CompletableFuture<String> primera = CompletableFuture.supplyAsync(una, Hilos.ESPERA);
+    CompletableFuture<String> segunda = CompletableFuture.supplyAsync(otra, Hilos.ESPERA);
+    try {
+      return new String[] {primera.join(), segunda.join()};
+    } catch (CompletionException e) {
+      if (e.getCause() instanceof RuntimeException causa) {
+        throw causa;
+      }
+      throw e;
+    }
+  }
+
+  /** Para juntar dos respuestas en un solo JSON; si alguna no lo es, va como texto. */
+  private static JsonNode comoJson(String respuesta) {
+    try {
+      return MAPPER.readTree(respuesta);
+    } catch (Exception e) {
+      return MAPPER.getNodeFactory().textNode(respuesta);
+    }
   }
 }

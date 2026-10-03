@@ -33,7 +33,7 @@ Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
 ventana.
 
-Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 34
+Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 39
 tools disponibles.
 
 ## Las herramientas
@@ -54,7 +54,8 @@ vista de quien pregunta es la misma intención.
 | `consultar_necesidades` | Por número o por producto, con su progreso |
 | `consultar_productos` | El catálogo donable |
 | `consultar_donaciones` | Todas, las de un donador, o una puntual |
-| `consultar_depositos_y_stock` | Depósitos de Logística o stock de un producto |
+| `consultar_depositos_y_stock` | Depósitos con su stock real, el de uno por producto, o el de un producto |
+| `consultar_asignaciones` | Paquetes de Logística: por paquete, donación, estado o necesidad |
 | `consultar_insignias_y_misiones` | El catálogo de Incentivos |
 
 ### Operación
@@ -73,6 +74,10 @@ vista de quien pregunta es la misma intención.
 | `eliminar_necesidad` | Borrar una necesidad |
 | `procesar_donador_en_incentivos` | Forzar la evaluación de una misión |
 | `reportar_entrega` | Cerrar el circuito: la donación se da por cumplida |
+| `crear_deposito` | Alta de depósito en Logística |
+| `modificar_deposito` | Cambiar nombre, dirección, capacidad o algoritmo |
+| `eliminar_deposito` | Borrar un depósito sin stock |
+| `configurar_algoritmo_deposito` | SUBATENDIDOS o PRIOSCORE |
 | `cambiar_estado_donador` | VERIFICADO, SOSPECHOSO o BANEADO |
 | `cambiar_categoria_donador` | Dejarlo en una categoría determinada |
 

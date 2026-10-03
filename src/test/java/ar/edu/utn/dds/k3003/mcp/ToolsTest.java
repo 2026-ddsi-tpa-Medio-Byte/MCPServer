@@ -10,6 +10,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -495,5 +496,241 @@ class ToolsTest {
     // Un error que no es 404 no se arregla esperando: insistir solo consumiría el plazo.
     servidor.verify();
     assertTrue(salida.toString().contains("No se pudo reportar la entrega de paq-12"));
+  }
+
+  // ── Logística: depósitos, stock y asignaciones ─────────────────────────────
+
+  @Test
+  @DisplayName("Sin parámetros, el stock de los depósitos se pide a /api/depositos y no a /depositos")
+  void depositosConStockReal() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(
+            withSuccess(
+                "[{\"depositoid\":\"DEP-UTN-01\",\"stockActual\":26}]", MediaType.APPLICATION_JSON));
+
+    String respuesta = consultas.consultarLogistica(null, null, null);
+
+    // /depositos trae stockActual siempre vacío: si lo pidiera, el servidor fallaría por pedido
+    // inesperado.
+    servidor.verify();
+    assertTrue(respuesta.contains("26"));
+  }
+
+  @Test
+  @DisplayName("Con un depósito, trae sus datos y su stock por producto en una sola respuesta")
+  void depositoConSuStock() throws Exception {
+    // Las dos consultas salen a la vez, así que el orden en que llegan no está garantizado.
+    servidor = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01"))
+        .andRespond(
+            withSuccess(
+                "{\"depositoid\":\"DEP-UTN-01\",\"stockActual\":26}", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01/stock"))
+        .andRespond(
+            withSuccess(
+                "[{\"productoid\":\"3\",\"cantidad\":20},{\"productoid\":\"2\",\"cantidad\":6}]",
+                MediaType.APPLICATION_JSON));
+
+    var respuesta =
+        new ObjectMapper().readTree(consultas.consultarLogistica(" DEP-UTN-01 ", null, null));
+
+    servidor.verify();
+    assertEquals(26, respuesta.path("deposito").path("stockActual").asInt());
+    assertEquals(20, respuesta.path("stock").get(0).path("cantidad").asInt());
+  }
+
+  @Test
+  @DisplayName("Con un producto trae su detalle por depósito; con todoElStock, el de todos")
+  void stockPorProductoYCompleto() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/stock/3/detalle"))
+        .andRespond(withSuccess("{\"totalDisponible\":20}", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/stock"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
+    consultas.consultarLogistica(null, "3", null);
+    consultas.consultarLogistica(null, null, true);
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Crear un depósito manda solo lo que se indicó, sin stock")
+  void crearDepositoMinimo() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos"))
+        .andExpect(method(HttpMethod.POST))
+        // Sin id ni algoritmo: el id lo genera Logística y el algoritmo queda sin configurar.
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"nombre":"Deposito Norte","direccion":"Av. Cabildo 100","capacidadMaxima":3000}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(
+            withStatus(HttpStatus.CREATED)
+                .body("{\"depositoid\":\"DEP-UTN-02\"}")
+                .contentType(MediaType.APPLICATION_JSON));
+
+    String respuesta =
+        operaciones.crearDeposito("Deposito Norte", "Av. Cabildo 100", 3000, null, null);
+
+    servidor.verify();
+    assertTrue(respuesta.contains("DEP-UTN-02"), "el id generado tiene que llegar al usuario");
+  }
+
+  @Test
+  @DisplayName("El algoritmo escrito de otra forma se traduce al nombre que esperan los /api")
+  void crearDepositoConAlgoritmo() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"nombre":"Deposito Norte","depositoid":"DEP-UTN-02","direccion":"Av. Cabildo 100",
+                     "capacidadMaxima":3000,"algoritmo":"PRIOSCORE"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.crearDeposito(
+        "Deposito Norte", "Av. Cabildo 100", 3000, "DEP-UTN-02", "prioridad por score");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Modificar un depósito completa lo que no cambia con los valores actuales")
+  void modificarDepositoCompleta() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(
+            withSuccess(
+                """
+                {"nombre":"Deposito Central UTN","depositoid":"DEP-UTN-01",
+                 "direccion":"Av. Medrano 951","capacidadMaxima":5000,"stockActual":26,
+                 "algoritmo":"SUBATENDIDOS"}""",
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01"))
+        .andExpect(method(HttpMethod.PUT))
+        // El stock no viaja: no se modifica por acá.
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"nombre":"Deposito Central UTN","direccion":"Av. Medrano 951",
+                     "capacidadMaxima":8000,"algoritmo":"SUBATENDIDOS"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.modificarDeposito("DEP-UTN-01", null, null, 8000, null);
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Si se indica todo, modificar un depósito no lo lee antes")
+  void modificarDepositoSinLeer() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01"))
+        .andExpect(method(HttpMethod.PUT))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"nombre":"Central","direccion":"Medrano 951","capacidadMaxima":8000,
+                     "algoritmo":"SUBATENDIDOS"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.modificarDeposito("DEP-UTN-01", "Central", "Medrano 951", 8000, "SUB_ATENDIDOS");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Eliminar un depósito llama al DELETE de /api/depositos")
+  void eliminarDeposito() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01"))
+        .andExpect(method(HttpMethod.DELETE))
+        .andRespond(withStatus(HttpStatus.NO_CONTENT));
+
+    String respuesta = operaciones.eliminarDeposito("DEP-UTN-01");
+
+    servidor.verify();
+    assertTrue(respuesta.contains("DEP-UTN-01 eliminado"));
+  }
+
+  @Test
+  @DisplayName("El algoritmo de un depósito viaja como parámetro de la URL, no en el cuerpo")
+  void configurarAlgoritmo() {
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/depositos/DEP-UTN-01/algoritmo?algoritmo=SUBATENDIDOS"))
+        .andExpect(method(HttpMethod.PUT))
+        .andExpect(content().string(""))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.configurarAlgoritmoDeposito("DEP-UTN-01", "sub atendidos");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Las operaciones sobre depósitos no se hacen sin sesión de admin")
+  void depositosSinAdmin() {
+    sesion.iniciarComoDonador("1", "Carlos");
+
+    assertThrows(
+        IllegalStateException.class,
+        () -> operaciones.crearDeposito("Norte", "Cabildo 100", 3000, null, null));
+    assertThrows(
+        IllegalStateException.class,
+        () -> operaciones.modificarDeposito("DEP-UTN-01", null, null, 8000, null));
+    assertThrows(IllegalStateException.class, () -> operaciones.eliminarDeposito("DEP-UTN-01"));
+    assertThrows(
+        IllegalStateException.class,
+        () -> operaciones.configurarAlgoritmoDeposito("DEP-UTN-01", "PRIOSCORE"));
+
+    // Ninguna llegó a Logística.
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Las asignaciones se consultan por paquete, por donación, por filtros o todas")
+  void consultarAsignaciones() {
+    // Las consultas no piden sesión.
+    sesion.cerrarSesion();
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-solicitud-abc"))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/donaciones/12"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones?estado=ASIGNADA&necesidadid=7"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
+    consultas.consultarAsignaciones("paq-solicitud-abc", null, null, null);
+    consultas.consultarAsignaciones(null, "12", null, null);
+    consultas.consultarAsignaciones(null, null, "asignada", "7");
+    consultas.consultarAsignaciones(null, null, null, null);
+
+    servidor.verify();
   }
 }

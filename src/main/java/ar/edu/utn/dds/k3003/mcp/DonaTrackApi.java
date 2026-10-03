@@ -100,6 +100,10 @@ public class DonaTrackApi {
     return pedir(HttpMethod.POST, logistica + path, body);
   }
 
+  public String putLogistica(String path, Object body) {
+    return pedir(HttpMethod.PUT, logistica + path, body);
+  }
+
   public String deleteLogistica(String path) {
     return pedir(HttpMethod.DELETE, logistica + path, null);
   }

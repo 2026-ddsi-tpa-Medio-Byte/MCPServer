@@ -462,4 +462,202 @@ public class OperacionTools {
   private static String donacionDe(String paquete) {
     return paquete.startsWith("paq-") ? paquete.substring("paq-".length()) : "";
   }
+
+  // ── Depósitos de Logística ─────────────────────────────────────────────────
+
+  /**
+   * Lo que espera la lectura previa a modificar un depósito.
+   *
+   * <p>Menos que una consulta común, que con su reintento llega a 50 segundos: sumada a la
+   * escritura, que llega a 35, la herramienta pasaría el corte de 60 de Claude.
+   */
+  private static final int PACIENCIA_LECTURA_SEGUNDOS = 20;
+
+  @Tool(
+      name = "crear_deposito",
+      description =
+          "Da de alta un depósito en Logística, donde se guarda el stock de las donaciones que "
+              + "no se asignaron a ninguna necesidad. Requiere ADMIN. El id es opcional: si no se "
+              + "indica, Logística genera uno con el formato DEP-UTN-XX. El algoritmo también: si "
+              + "no se indica, el depósito queda sin algoritmo y Logística aplica SUBATENDIDOS al "
+              + "procesar donaciones. Devuelve el depósito creado, con el id que le quedó.")
+  public String crearDeposito(
+      @ToolParam(description = "Nombre del depósito, por ejemplo Deposito Central UTN")
+          String nombre,
+      @ToolParam(description = "Dirección, por ejemplo Av. Medrano 951") String direccion,
+      @ToolParam(description = "Cuántas unidades entran en total, por ejemplo 5000")
+          int capacidadMaxima,
+      @ToolParam(
+              required = false,
+              description = "Id con el formato DEP-UTN-01. Si se omite lo genera Logística.")
+          String depositoId,
+      @ToolParam(
+              required = false,
+              description =
+                  "SUBATENDIDOS (prioriza la necesidad con menor porcentaje cubierto) o PRIOSCORE "
+                      + "(prioriza por urgencia sobre progreso). Si se omite, no se configura.")
+          String algoritmo) {
+    sesion.requerirAdmin("crear un depósito");
+    // El stock no se manda: arranca vacío y lo llenan las donaciones.
+    return api.postLogistica(
+        "/api/depositos",
+        DonaTrackApi.cuerpo(
+            "nombre", nombre,
+            "depositoid", textoONulo(depositoId),
+            "direccion", direccion,
+            "capacidadMaxima", capacidadMaxima,
+            "algoritmo", algoritmoDe(algoritmo)));
+  }
+
+  @Tool(
+      name = "modificar_deposito",
+      description =
+          "Cambia los datos de un depósito de Logística: nombre, dirección, capacidad máxima o "
+              + "algoritmo. Requiere ADMIN. Alcanza con indicar lo que cambia: lo demás se "
+              + "completa con los valores actuales del depósito. El stock no se modifica por acá: "
+              + "lo mueven las donaciones y las entregas. Devuelve la respuesta de Logística.")
+  public String modificarDeposito(
+      @ToolParam(description = "Id del depósito, por ejemplo DEP-UTN-01") String depositoId,
+      @ToolParam(required = false, description = "Nuevo nombre. Vacío para dejar el actual.")
+          String nombre,
+      @ToolParam(required = false, description = "Nueva dirección. Vacío para dejar la actual.")
+          String direccion,
+      @ToolParam(
+              required = false,
+              description = "Nueva capacidad en unidades, por ejemplo 8000. Vacío para dejar la actual.")
+          Integer capacidadMaxima,
+      @ToolParam(
+              required = false,
+              description = "SUBATENDIDOS o PRIOSCORE. Vacío para dejar el actual.")
+          String algoritmo) {
+    sesion.requerirAdmin("modificar un depósito");
+    String id = depositoId.trim();
+    String nuevoNombre = textoONulo(nombre);
+    String nuevaDireccion = textoONulo(direccion);
+    Integer nuevaCapacidad = capacidadMaxima;
+    String nuevoAlgoritmo = algoritmoDe(algoritmo);
+    if (nuevoNombre == null
+        && nuevaDireccion == null
+        && nuevaCapacidad == null
+        && nuevoAlgoritmo == null) {
+      throw new IllegalArgumentException(
+          "Para modificar el depósito hace falta indicar al menos un dato que cambie.");
+    }
+
+    // Logística pide el depósito entero en cada PUT. Para no obligar a repetir lo que no cambia,
+    // se completa con lo que tiene ahora; si vino todo, no hace falta leerlo.
+    if (nuevoNombre == null
+        || nuevaDireccion == null
+        || nuevaCapacidad == null
+        || nuevoAlgoritmo == null) {
+      com.fasterxml.jackson.databind.JsonNode actual =
+          parsear(leerConPaciencia(() -> api.getLogistica("/api/depositos/" + id)));
+      nuevoNombre = nuevoNombre != null ? nuevoNombre : campo(actual, "nombre");
+      nuevaDireccion = nuevaDireccion != null ? nuevaDireccion : campo(actual, "direccion");
+      if (nuevaCapacidad == null && actual != null && actual.path("capacidadMaxima").isNumber()) {
+        nuevaCapacidad = actual.path("capacidadMaxima").asInt();
+      }
+      nuevoAlgoritmo = nuevoAlgoritmo != null ? nuevoAlgoritmo : campo(actual, "algoritmo");
+    }
+
+    return api.putLogistica(
+        "/api/depositos/" + id,
+        DonaTrackApi.cuerpo(
+            "nombre", nuevoNombre,
+            "direccion", nuevaDireccion,
+            "capacidadMaxima", nuevaCapacidad,
+            "algoritmo", nuevoAlgoritmo));
+  }
+
+  @Tool(
+      name = "eliminar_deposito",
+      description =
+          "Borra un depósito de Logística. Requiere ADMIN. Usar solo si el usuario lo pide de "
+              + "forma explícita: no se puede deshacer. Logística no deja borrar un depósito que "
+              + "todavía tiene stock. Si es el depósito al que donan por defecto el bot y el MCP, "
+              + "las donaciones van a fallar hasta volver a crearlo.")
+  public String eliminarDeposito(
+      @ToolParam(description = "Id del depósito a borrar, por ejemplo DEP-UTN-01")
+          String depositoId) {
+    sesion.requerirAdmin("eliminar un depósito");
+    String id = depositoId.trim();
+    api.deleteLogistica("/api/depositos/" + id);
+    return "Depósito " + id + " eliminado.";
+  }
+
+  @Tool(
+      name = "configurar_algoritmo_deposito",
+      description =
+          "Cambia el algoritmo con el que un depósito de Logística decide a qué necesidad "
+              + "asignar cada donación que recibe. Requiere ADMIN. SUBATENDIDOS prioriza la "
+              + "necesidad con menor porcentaje cubierto; PRIOSCORE prioriza por urgencia sobre "
+              + "el progreso. Devuelve la respuesta de Logística.")
+  public String configurarAlgoritmoDeposito(
+      @ToolParam(description = "Id del depósito, por ejemplo DEP-UTN-01") String depositoId,
+      @ToolParam(description = "SUBATENDIDOS o PRIOSCORE") String algoritmo) {
+    sesion.requerirAdmin("cambiar el algoritmo de un depósito");
+    String valor = algoritmoDe(algoritmo);
+    if (valor == null) {
+      throw new IllegalArgumentException(
+          "Hace falta indicar el algoritmo: SUBATENDIDOS o PRIOSCORE.");
+    }
+    // Logística lo espera como parámetro de la URL, no en el cuerpo.
+    return api.putLogistica(
+        "/api/depositos/" + depositoId.trim() + "/algoritmo?algoritmo=" + valor, null);
+  }
+
+  /**
+   * Traduce lo que se escribió al nombre que esperan los endpoints /api de Logística.
+   *
+   * <p>Es formato, no regla de negocio: «sub atendidos» y «prioridad por score» son los mismos
+   * algoritmos escritos de otra forma. En /api solo valen SUBATENDIDOS y PRIOSCORE; los nombres
+   * SUB_ATENDIDOS y PRIORIDAD_POR_SCORE son del endpoint de integración /depositos, el que usa la
+   * seed. Lo que no se reconoce se manda tal cual para que Logística lo rechace con su motivo.
+   */
+  private static String algoritmoDe(String valor) {
+    if (valor == null || valor.isBlank()) {
+      return null;
+    }
+    return switch (valor.toUpperCase().replaceAll("[^A-Z]", "")) {
+      case "SUBATENDIDOS", "SUBATENDIDO" -> "SUBATENDIDOS";
+      case "PRIOSCORE", "PRIORIDADPORSCORE", "PRIORIDADSCORE" -> "PRIOSCORE";
+      default -> valor.trim().toUpperCase();
+    };
+  }
+
+  private static String textoONulo(String valor) {
+    return valor == null || valor.isBlank() ? null : valor.trim();
+  }
+
+  /** Null si falta o viene en null: asText() de un null de JSON devolvería la palabra "null". */
+  private static String campo(com.fasterxml.jackson.databind.JsonNode nodo, String nombre) {
+    return nodo != null && nodo.hasNonNull(nombre) ? nodo.get(nombre).asText() : null;
+  }
+
+  /**
+   * Espera la consulta, pero no más que el plazo de lectura.
+   *
+   * <p>Si el módulo contesta con un error, sube ese error tal como lo tradujo DonaTrackApi: lo
+   * único que se saca es el envoltorio del futuro.
+   */
+  private static String leerConPaciencia(java.util.function.Supplier<String> consulta) {
+    try {
+      return java.util.concurrent.CompletableFuture.supplyAsync(consulta, Hilos.ESPERA)
+          .get(PACIENCIA_LECTURA_SEGUNDOS, java.util.concurrent.TimeUnit.SECONDS);
+    } catch (java.util.concurrent.ExecutionException e) {
+      if (e.getCause() instanceof RuntimeException causa) {
+        throw causa;
+      }
+      throw new IllegalStateException(e.getCause());
+    } catch (java.util.concurrent.TimeoutException e) {
+      throw new DonaTrackApi.SinRespuesta(
+          "Logística no contestó en "
+              + PACIENCIA_LECTURA_SEGUNDOS
+              + " segundos al leer el depósito, así que no se modificó nada. Si está dormido, "
+              + "'despertar_servicios' lo despierta y después se puede reintentar.");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("Se interrumpió la lectura del depósito.", e);
+    }
+  }
 }
