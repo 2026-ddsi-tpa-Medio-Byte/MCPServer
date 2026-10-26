@@ -33,7 +33,7 @@ Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
 ventana.
 
-Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 45
+Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 51
 tools disponibles.
 
 ### Contraseña de administrador
@@ -118,6 +118,11 @@ vista de quien pregunta es la misma intención.
 | `consultar_asignaciones` | Paquetes de Logística: por paquete, donación, estado o necesidad |
 | `consultar_insignias_y_misiones` | El catálogo de Incentivos |
 | `consultar_mision_de_donador` | La misión en curso de un donador y sus insignias |
+| `consultar_ficha_donador` | **Modelo de lectura.** La ficha integral: categoría, misión con lo que le falta, quejas, entidades |
+| `consultar_necesidades_urgentes` | **Modelo de lectura.** Necesidades sin cubrir, con el stock de esos productos |
+| `consultar_estado_depositos` | **Modelo de lectura.** Ocupación, asignaciones, tiempo de entrega y entidades atendidas |
+| `consultar_calidad_donaciones` | **Modelo de lectura.** Proporción de quejas por categoría y ranking de donadores |
+| `consultar_modelo_lectura` | **Modelo de lectura.** Cómo viene la sincronización: último evento por módulo, atraso, DLQ |
 
 ### Operación
 
@@ -160,11 +165,12 @@ vista de quien pregunta es la misma intención.
 |---|---|
 | `guion_demo` | El orden sugerido para mostrar el sistema |
 | `despertar_servicios` | Sacar del sueño a los cuatro módulos de Render |
-| `reiniciar_sistema` | Vaciar las cuatro bases |
+| `reiniciar_sistema` | Vaciar las cuatro bases y el modelo de lectura |
 | `reiniciar_modulo` | Vaciar un módulo solo, dejando los otros tres como estaban |
 | `preparar_demo` | Cargar las precondiciones de todos los flujos |
 | `preparar_modulo` | Cargar las precondiciones de un módulo solo |
-| `estado_del_sistema` | Cómo está todo ahora, módulo por módulo |
+| `estado_del_sistema` | Cómo está todo ahora, módulo por módulo, y la sincronización del modelo de lectura |
+| `resincronizar_modelo_lectura` | Que los cuatro módulos vuelvan a publicar su estado al modelo de lectura |
 
 ## Las operaciones cuentan qué provocaron
 
@@ -213,6 +219,33 @@ Una vez conectado, se le habla a Claude en lenguaje natural:
 
 Claude elige la herramienta, la llama y explica el resultado. Si un módulo rechaza algo, el
 motivo real llega hasta el usuario en vez de perderse en un stack trace.
+
+## El modelo de lectura (CQRS)
+
+Desde la Entrega 6 hay un **Servicio de Consultas**: una base MongoDB que combina los cuatro
+módulos y se actualiza por eventos (RabbitMQ), sin llamar a los módulos en el momento. Resuelve
+las consultas que cruzan varios módulos. Solo se alcanza **a través del gateway**
+(`{gw}/consultas/...`): sin `DONATRACK_GATEWAY_URL`, las cinco herramientas del modelo de lectura
+lo dicen y no fallan.
+
+| Pedido | Herramienta |
+|---|---|
+| «Armame un resumen del donador 12: categoría, cuánto le falta para su misión y quejas» | `consultar_ficha_donador` |
+| «¿Qué necesidades urgentes siguen sin cubrir y cuánto stock tenemos de esos productos?» | `consultar_necesidades_urgentes` |
+| «¿Cómo están los depósitos? ¿Cuánto tardan en entregar?» | `consultar_estado_depositos` |
+| «¿Qué categorías reciben más quejas? ¿Qué donadores acumulan más?» | `consultar_calidad_donaciones` |
+| «¿La sincronización viene al día?» | `consultar_modelo_lectura` |
+
+**Consistencia eventual.** Justo después de una operación (una donación, una entrega, una queja)
+la consulta puede no reflejarla todavía: lo normal es menos de un segundo, pero con el servicio
+dormido pueden ser unos segundos. Si falta algo recién hecho, se espera un par de segundos y se
+reintenta una vez; si sigue faltando, se dice «el modelo de lectura todavía no lo refleja», no que
+falló. Un 404 de la ficha tampoco prueba que el donador no exista: puede no estar sincronizado.
+
+`reiniciar_sistema` también vacía Mongo, para que arranque vacío junto con los módulos.
+`resincronizar_modelo_lectura` le pide a cada módulo que vuelva a publicar su estado
+(`POST /admin/republicar-eventos`); un módulo que todavía no lo implementó se informa como tal y
+no cuenta como falla.
 
 ## Configuración
 

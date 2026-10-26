@@ -172,10 +172,43 @@ public class DonaTrackApi {
   }
 
   public String getConsultas(String path) {
+    return getConsultas(path, Map.of());
+  }
+
+  /**
+   * Una consulta al modelo de lectura, con sus parámetros de URL.
+   *
+   * <p>Los valores se codifican uno por uno y la dirección se manda ya armada. Pasarla como texto
+   * dejaría sin codificar un {@code &} o un {@code +} dentro de un valor —una categoría «Higiene &
+   * Limpieza» cortaría el parámetro en dos— y codificarlos de antemano los codificaría dos veces. Los
+   * parámetros vacíos no se mandan: todos son opcionales.
+   */
+  public String getConsultas(String path, Map<String, String> parametros) {
+    exigirConsultas();
+    org.springframework.web.util.UriComponentsBuilder url =
+        org.springframework.web.util.UriComponentsBuilder.fromUriString(consultas + path);
+    Map<String, Object> valores = new java.util.LinkedHashMap<>();
+    parametros.forEach(
+        (nombre, valor) -> {
+          if (valor != null && !valor.isBlank()) {
+            url.queryParam(nombre, "{" + nombre + "}");
+            valores.put(nombre, valor.trim());
+          }
+        });
+    java.net.URI uri = url.encode().buildAndExpand(valores).toUri();
+    return pedir(HttpMethod.GET, uri, uri.toString(), null);
+  }
+
+  /** Vaciar el modelo de lectura. Solo para la demostración. */
+  public String deleteConsultas(String path) {
+    exigirConsultas();
+    return pedir(HttpMethod.DELETE, consultas + path, null);
+  }
+
+  private void exigirConsultas() {
     if (!hayServicioDeConsultas()) {
       throw new IllegalStateException("El Servicio de Consultas solo se alcanza por el gateway.");
     }
-    return pedir(HttpMethod.GET, consultas + path, null);
   }
 
   public String getDonaciones(String path) {
@@ -272,10 +305,19 @@ public class DonaTrackApi {
   // ── Llamada ────────────────────────────────────────────────────────────────
 
   private String pedir(HttpMethod metodo, String url, Object body) {
+    // Se arma la dirección igual que lo haría RestTemplate con un texto, para que nada cambie.
+    return pedir(metodo, rest.getUriTemplateHandler().expand(url), url, body);
+  }
+
+  /**
+   * @param uri la dirección tal como se manda
+   * @param url la misma dirección, para mostrarla en los mensajes
+   */
+  private String pedir(HttpMethod metodo, java.net.URI uri, String url, Object body) {
     log.info("{} {}", metodo, url);
     try {
       String resp =
-          rest.exchange(url, metodo, new HttpEntity<>(body, cabeceras()), String.class).getBody();
+          rest.exchange(uri, metodo, new HttpEntity<>(body, cabeceras()), String.class).getBody();
       return resp == null || resp.isBlank() ? "Operación realizada." : resp;
     } catch (HttpStatusCodeException e) {
       String explicacion = explicar(e, url);
@@ -292,31 +334,32 @@ public class DonaTrackApi {
       // despertando, así que una consulta se repite una vez, y una operación no.
       if (esDelGateway(e)) {
         if (metodo == HttpMethod.GET) {
-          return reintentarConsulta(metodo, url, body, explicacion);
+          return reintentarConsulta(metodo, uri, url, body, explicacion);
         }
         throw new SinRespuesta(explicacion);
       }
       if (esDeRender(e)) {
         throw new SinRespuesta(explicacion);
       }
-      throw new RuntimeException(explicacion);
+      throw new ErrorDeModulo(e.getStatusCode().value(), explicacion);
     } catch (ResourceAccessException e) {
       // Una consulta se puede repetir sin consecuencias, y en Render el primer pedido a un
       // servicio dormido se pierde despertándolo. Una operación que modifica datos NO se
       // reintenta: sin respuesta no se sabe si llegó, y repetirla puede duplicarla.
       if (metodo == HttpMethod.GET) {
-        return reintentarConsulta(metodo, url, body, sinRespuesta(url));
+        return reintentarConsulta(metodo, uri, url, body, sinRespuesta(url));
       }
       throw new SinRespuesta(sinRespuesta(url));
     }
   }
 
   /** La segunda vuelta de una consulta que no obtuvo respuesta; si tampoco, queda sin respuesta. */
-  private String reintentarConsulta(HttpMethod metodo, String url, Object body, String siFalla) {
+  private String reintentarConsulta(
+      HttpMethod metodo, java.net.URI uri, String url, Object body, String siFalla) {
     log.info("Reintentando {} {} (el módulo estaba dormido)", metodo, url);
     try {
       String resp =
-          rest.exchange(url, metodo, new HttpEntity<>(body, cabeceras()), String.class).getBody();
+          rest.exchange(uri, metodo, new HttpEntity<>(body, cabeceras()), String.class).getBody();
       return resp == null || resp.isBlank() ? "Operación realizada." : resp;
     } catch (RuntimeException segunda) {
       throw new SinRespuesta(siFalla);
@@ -535,6 +578,27 @@ public class DonaTrackApi {
   public static class NoEncontrado extends RuntimeException {
     public NoEncontrado(String mensaje) {
       super(mensaje);
+    }
+  }
+
+  /**
+   * El módulo contestó con un error que no es ninguno de los de arriba: una regla de negocio
+   * (400), un conflicto (409), un 503 propio, un error interno.
+   *
+   * <p>Existe para poder decidir con el código y no con el texto del mensaje. Es el caso de un
+   * módulo que contesta 503 porque no tiene RabbitMQ configurado: contestó, no está dormido, y lo
+   * que corresponde es decirlo así.
+   */
+  public static class ErrorDeModulo extends RuntimeException {
+    private final int codigo;
+
+    public ErrorDeModulo(int codigo, String mensaje) {
+      super(mensaje);
+      this.codigo = codigo;
+    }
+
+    public int codigo() {
+      return codigo;
     }
   }
 

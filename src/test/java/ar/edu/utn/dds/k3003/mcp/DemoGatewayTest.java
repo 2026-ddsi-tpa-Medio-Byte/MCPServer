@@ -175,8 +175,9 @@ class DemoGatewayTest {
   @Test
   @DisplayName("El estado del sistema dice por dónde se llega y si responden el gateway y Consultas")
   void estadoConGateway() {
+    // El estado mira a Consultas por /estado (la sincronización), no por el health check.
     servidor
-        .expect(ExpectedCount.manyTimes(), requestTo(GW + "/consultas/actuator/health"))
+        .expect(ExpectedCount.manyTimes(), requestTo(GW + "/consultas/estado"))
         .andRespond(withStatus(HttpStatus.NOT_FOUND).body("no hay ruta"));
     // Todo lo demás, vacío pero contestando.
     servidor

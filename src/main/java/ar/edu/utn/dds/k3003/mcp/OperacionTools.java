@@ -326,12 +326,18 @@ public class OperacionTools {
           "Da de alta un producto donable. Necesita un identificador ya creado. Ojo con dos "
               + "reglas: si el identificador es de código de barras, la descripción tiene que "
               + "tener al menos tres palabras; si es QR, el nombre tiene que tener una cantidad "
-              + "par de letras. Además no puede repetirse un nombre ya usado.")
+              + "par de letras. Además no puede repetirse un nombre ya usado. La subcategoría es "
+              + "opcional: sirve para agrupar los productos en las consultas de calidad y de "
+              + "necesidades urgentes.")
   public String crearProducto(
       @ToolParam(description = "Nombre del producto") String nombre,
       @ToolParam(description = "Descripción") String descripcion,
       @ToolParam(description = "Categoría, por ejemplo alimentos o abrigo") String categoria,
-      @ToolParam(description = "Número del identificador a usar") String identificadorId) {
+      @ToolParam(description = "Número del identificador a usar") String identificadorId,
+      @ToolParam(
+              required = false,
+              description = "Subcategoría dentro de la categoría, por ejemplo Secos. Opcional.")
+          String subcategoria) {
     sesion.requerirAdmin("dar de alta un producto");
     return api.postDonaciones(
         "/productos",
@@ -339,6 +345,7 @@ public class OperacionTools {
             "nombre", nombre,
             "descripcion", descripcion,
             "categoriaID", categoria,
+            "subcategoria", textoONulo(subcategoria),
             "identificadorID", identificadorId.trim()));
   }
 

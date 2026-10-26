@@ -1104,4 +1104,49 @@ class ToolsTest {
 
     assertTrue(e.getMessage().contains("error interno"));
   }
+
+  // ── Producto con subcategoría ──────────────────────────────────────────────
+
+  @Test
+  @DisplayName("Crear un producto manda la subcategoría si se indica")
+  void crearProductoConSubcategoria() {
+    servidor
+        .expect(requestTo(DONACIONES + "/productos"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"nombre":"Fideos","descripcion":"Fideos secos tipo tirabuzon","categoriaID":"Alimentos",
+                     "subcategoria":"Secos","identificadorID":"1"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{\"id\":\"3\"}", MediaType.APPLICATION_JSON));
+
+    operaciones.crearProducto("Fideos", "Fideos secos tipo tirabuzon", "Alimentos", " 1 ", "Secos");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Sin subcategoría el cuerpo no la lleva: un POST como los de siempre")
+  void crearProductoSinSubcategoria() {
+    servidor
+        .expect(requestTo(DONACIONES + "/productos"))
+        .andExpect(method(HttpMethod.POST))
+        // Estricto: un campo vacío de más cambiaría lo que ya hacían los clientes actuales.
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"nombre":"Fideos","descripcion":"Fideos secos tipo tirabuzon","categoriaID":"Alimentos",
+                     "identificadorID":"1"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{\"id\":\"3\"}", MediaType.APPLICATION_JSON));
+
+    operaciones.crearProducto("Fideos", "Fideos secos tipo tirabuzon", "Alimentos", "1", "  ");
+
+    servidor.verify();
+  }
 }

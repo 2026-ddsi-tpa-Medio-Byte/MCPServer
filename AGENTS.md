@@ -42,11 +42,11 @@ o traer uno: para quien pregunta es la misma intención, y dar dos herramientas 
 que el modelo elija mal más seguido.
 
 ```
-ConsultaTools     13 tools de solo lectura
+ConsultaTools     18 tools de solo lectura (5 del modelo de lectura)
 OperacionTools    22 tools que modifican estado
 AuthTools          3 tools de sesión
 SeedTools          2 tools que cargan precondiciones (todo, o un módulo solo)
-DemoTools          5 tools para conducir la demostración
+DemoTools          6 tools para conducir la demostración
 Modulo            resuelve el nombre del módulo en las tools que trabajan sobre uno
 DonaTrackApi      único punto de contacto con los módulos
 ```
@@ -73,6 +73,27 @@ suspendido por su dueño contesta 503 con el header `x-render-routing: suspend-b
 despierta nunca hasta que lo reanudan desde el panel: `DonaTrackApi.Suspendido`, que
 `despertar_servicios` marca aparte (⛔) en vez de pedir que se repita.
 
+## El modelo de lectura: consistencia eventual (Entrega 6)
+
+Las cinco tools de `ConsultaTools` que terminan en el Servicio de Consultas
+(`consultar_ficha_donador`, `_necesidades_urgentes`, `_estado_depositos`, `_calidad_donaciones` y
+`consultar_modelo_lectura`) leen una base que se actualiza **por eventos**: justo después de una
+operación pueden no reflejarla. Sus descripciones lo dicen y mandan a esperar un par de segundos y
+reintentar una vez; **no meter esa espera dentro de la tool**, porque solo el modelo sabe si
+acaba de operar. El contrato está en `guias-entrega-6/CONTRATO-CONSULTAS.md`.
+
+Dos cuidados que ya se tomaron y hay que conservar: un **404 de la ficha no es «no existe»** (puede
+no estar sincronizado, y la tool lo dice), y a la ficha se le agrega `avisoDelMcp` cuando
+`fuentes` trae un `false`, porque un `null` suelto se lee como «no tiene» cuando es «todavía no
+llegó». Los parámetros de URL se codifican uno por uno (`DonaTrackApi.getConsultas`): una categoría
+con `&` no se corta ni se codifica dos veces.
+
+`reiniciar_sistema` vacía también Mongo (`DELETE {gw}/consultas/admin/reset`), y
+`resincronizar_modelo_lectura` llama a `POST /admin/republicar-eventos` en los cuatro módulos. Ese
+endpoint contesta 404 si el módulo no lo implementó (no es una falla) y, sin `RABBITMQ_URL`,
+503 con texto (Donadores) o 200 con `eventosHabilitados: false` (Donaciones): las dos formas se
+informan como «no tiene configurado RabbitMQ».
+
 ## Probarlo sin Claude Desktop
 
 Empaquetar y hablarle el protocolo directamente:
@@ -83,7 +104,7 @@ java -jar target/donatrack-mcp-1.0-SNAPSHOT.jar
 ```
 
 Enviando por stdin un `initialize` y después `tools/list` tiene que responder el handshake y las
-45 herramientas. Si imprime cualquier otra cosa en pantalla, eso está rompiendo el protocolo.
+51 herramientas. Si imprime cualquier otra cosa en pantalla, eso está rompiendo el protocolo.
 
 ## Antes de terminar un cambio
 
@@ -91,4 +112,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-114 tests, 0 fallos.
+155 tests, 0 fallos.

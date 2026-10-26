@@ -182,9 +182,11 @@ public class DemoTools {
   @Tool(
       name = "reiniciar_sistema",
       description =
-          "Borra los datos de los cuatro módulos y deja el sistema vacío para arrancar una "
-              + "demostración desde cero. Es destructivo y no se puede deshacer: usarlo solo si "
-              + "el usuario lo pide. Después conviene ejecutar 'preparar_demo'.")
+          "Borra los datos de los cuatro módulos y, si se usa gateway, también el modelo de "
+              + "lectura (MongoDB), y deja el sistema vacío para arrancar una demostración desde "
+              + "cero. Es destructivo y no se puede deshacer: usarlo solo si el usuario lo pide. "
+              + "Después conviene ejecutar 'preparar_demo'; si el modelo de lectura queda "
+              + "incompleto, 'resincronizar_modelo_lectura'.")
   public String reiniciarSistema() {
     sesion.requerirAdmin("reiniciar el sistema");
 
@@ -201,6 +203,13 @@ public class DemoTools {
     borrados.put(
         "Incentivos — insignias, misiones y progreso",
         () -> intentar(() -> api.postIncentivos("/admin/clear", null)));
+    // Mongo tiene que arrancar vacío junto con los módulos: si quedara lo de antes, las consultas
+    // mostrarían datos de una demostración que ya no existe. Solo se alcanza por el gateway.
+    if (api.hayServicioDeConsultas()) {
+      borrados.put(
+          "Servicio de Consultas — el modelo de lectura (MongoDB)",
+          () -> intentar(() -> api.deleteConsultas("/admin/reset")));
+    }
 
     // Cada módulo tiene su propia base: no hay un orden que respetar, y en paralelo un módulo
     // caído no demora a los demás.
@@ -214,6 +223,11 @@ public class DemoTools {
     resultados.forEach(
         (modulo, resultado) -> sb.append("- **").append(modulo).append("** — ").append(resultado).append("\n"));
     sb.append("\nSiguiente paso: `preparar_demo`, que carga las precondiciones de los flujos.\n");
+    if (api.hayServicioDeConsultas()) {
+      sb.append(
+          "Los eventos de lo que se cargue viajan solos al modelo de lectura; si después se ve "
+              + "incompleto, `resincronizar_modelo_lectura` lo vuelve a cargar.\n");
+    }
     return sb.toString();
   }
 
@@ -298,15 +312,187 @@ public class DemoTools {
     }
   }
 
+  // ── Modelo de lectura: volver a cargarlo y ver cómo viene ──────────────────
+
+  @Tool(
+      name = "resincronizar_modelo_lectura",
+      description =
+          "Le pide a los cuatro módulos que vuelvan a publicar su estado actual al modelo de "
+              + "lectura (POST /admin/republicar-eventos en cada uno). Requiere ADMIN. Sirve para "
+              + "la carga inicial después de vaciar el modelo ('reiniciar_sistema' y "
+              + "'preparar_demo'), o para recuperar lo que no llegó: cuando "
+              + "'consultar_modelo_lectura' muestra la sincronización atrasada, mensajes en la "
+              + "DLQ o datos faltantes. No modifica ningún módulo: solo vuelve a publicar lo que "
+              + "ya tienen. Los eventos viajan por RabbitMQ, así que el modelo tarda unos "
+              + "segundos en reflejarlos. Un módulo que todavía no implementó el republicar se "
+              + "informa como tal y no cuenta como falla; uno sin RabbitMQ configurado también se "
+              + "informa. El resultado ya viene redactado: mostrarlo tal cual.")
+  public String resincronizarModeloLectura() {
+    sesion.requerirAdmin("resincronizar el modelo de lectura");
+
+    // No hay un orden que respetar y en paralelo un módulo caído no demora a los demás. Es una
+    // operación: no se reintenta, porque sin respuesta no se sabe si publicó.
+    Map<String, Supplier<String>> pedidos = new LinkedHashMap<>();
+    pedidos.put(
+        "Donaciones", () -> republicar(() -> api.postDonaciones("/admin/republicar-eventos", null)));
+    pedidos.put(
+        "Donadores", () -> republicar(() -> api.postDonadores("/admin/republicar-eventos", null)));
+    pedidos.put(
+        "Logística", () -> republicar(() -> api.postLogistica("/admin/republicar-eventos", null)));
+    pedidos.put(
+        "Incentivos", () -> republicar(() -> api.postIncentivos("/admin/republicar-eventos", null)));
+    Map<String, String> resultados =
+        aLaVez(
+            pedidos,
+            modulo -> "⏳ no contestó a tiempo; puede haber publicado igual, conviene mirarlo en "
+                + "`consultar_modelo_lectura`",
+            PLAZO_SEGUNDOS);
+
+    StringBuilder sb = new StringBuilder("**Resincronización del modelo de lectura**\n\n");
+    resultados.forEach(
+        (modulo, resultado) -> sb.append("- **").append(modulo).append("** — ").append(resultado).append("\n"));
+    sb.append(
+        "\nLos eventos viajan por RabbitMQ: el modelo de lectura tarda unos segundos en "
+            + "reflejarlos. `consultar_modelo_lectura` muestra cuándo llegaron.\n");
+    if (!api.hayServicioDeConsultas()) {
+      sb.append(
+          "\n> Este servidor MCP no usa gateway, así que no puede ver el modelo de lectura: los "
+              + "módulos publicaron igual, pero para consultarlo hace falta DONATRACK_GATEWAY_URL.\n");
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Cuenta cómo salió el republicar de un módulo, sin tratar como falla lo que no lo es.
+   *
+   * <p>Un 404 es un módulo que todavía no implementó el endpoint: eso lo resuelve su dueño y no
+   * hay nada que reintentar. Un 503 propio (o un 200 con los eventos deshabilitados, que es como
+   * lo cuenta Donaciones) es un módulo sin {@code RABBITMQ_URL}: contestó, y lo que corresponde es
+   * decirlo así, no mandar a despertarlo.
+   */
+  private String republicar(Supplier<String> pedido) {
+    try {
+      return describirRepublicacion(pedido.get());
+    } catch (DonaTrackApi.NoEncontrado e) {
+      return "⚪ todavía no implementó `/admin/republicar-eventos` (404): no cuenta como falla";
+    } catch (DonaTrackApi.Suspendido e) {
+      return "⛔ suspendido en Render por su dueño: no se despierta desde acá";
+    } catch (DonaTrackApi.SinRespuesta e) {
+      return "⚠️ no respondió (dormido o caído): `despertar_servicios` y repetir";
+    } catch (DonaTrackApi.ErrorDeModulo e) {
+      if (e.codigo() == 503) {
+        return SIN_RABBITMQ;
+      }
+      return "⚠️ no se pudo: " + e.getMessage();
+    } catch (Exception e) {
+      return "⚠️ no se pudo: " + e.getMessage();
+    }
+  }
+
+  private static final String SIN_RABBITMQ =
+      "⚠️ ese módulo no tiene configurado RabbitMQ (falta `RABBITMQ_URL`): no se publicó nada";
+
+  private String describirRepublicacion(String respuesta) {
+    try {
+      JsonNode nodo = MAPPER.readTree(respuesta);
+      if (nodo.isObject() && nodo.has("eventosHabilitados") && !nodo.path("eventosHabilitados").asBoolean(true)) {
+        return SIN_RABBITMQ;
+      }
+      if (nodo.isObject() && nodo.has("publicados")) {
+        int publicados = nodo.path("publicados").asInt(0);
+        int fallidos = nodo.path("fallidos").asInt(0);
+        String de = nodo.has("total") ? " de " + nodo.path("total").asInt(0) : "";
+        return fallidos > 0
+            ? "⚠️ publicó " + publicados + de + ", pero " + fallidos + " fallaron: se puede repetir"
+            : "✅ publicó " + publicados + de + " eventos";
+      }
+    } catch (Exception noEsJson) {
+      // Un módulo que contesta texto plano: igual republicó.
+    }
+    return "✅ republicó su estado";
+  }
+
+  /**
+   * El estado de la sincronización, en pocas líneas: si el consumidor escucha, qué llegó último de
+   * cada módulo y si hay algo en la DLQ.
+   *
+   * <p>Solo se cuenta lo que se pudo ver. Con el consumidor apagado o sin escuchar no se muestran
+   * «últimos eventos»: serían datos viejos presentados como si el modelo estuviera al día.
+   */
+  private String resumenModeloLectura() {
+    try {
+      return describirEstadoDeSincronizacion(MAPPER.readTree(api.getConsultas("/estado")));
+    } catch (DonaTrackApi.NoEncontrado e) {
+      return "⚪ el gateway contestó 404: todavía no está publicado, o no expone `/estado`";
+    } catch (DonaTrackApi.Suspendido e) {
+      return "⛔ suspendido en Render por su dueño: no se despierta desde acá";
+    } catch (Exception e) {
+      return "⚠️ no responde";
+    }
+  }
+
+  private String describirEstadoDeSincronizacion(JsonNode estado) {
+    JsonNode consumidor = estado.path("consumidor");
+    if (!estado.isObject() || !consumidor.isObject()) {
+      return "⚠️ respondió con un formato que no se reconoce";
+    }
+    String detalle = consumidor.path("detalle").asText("");
+    if (!consumidor.path("habilitado").asBoolean(false)) {
+      return "✅ responde, pero el consumidor de eventos no está habilitado (falta "
+          + "`RABBITMQ_URL`): contesta con lo que ya tiene guardado y no recibe nada nuevo"
+          + (detalle.isBlank() ? "." : ". " + detalle);
+    }
+    String dlq = describirDlq(consumidor.path("mensajesEnDlq"));
+    if (!consumidor.path("escuchando").asBoolean(false)) {
+      return "⚠️ responde, pero no está escuchando eventos"
+          + (detalle.isBlank() ? "" : " (" + detalle + ")")
+          + ": lo que se opere ahora no se va a reflejar en las consultas hasta que se recupere · "
+          + dlq;
+    }
+    StringBuilder sb = new StringBuilder("✅ escuchando eventos · ");
+    sb.append("en cola ").append(texto(consumidor.path("mensajesEnCola"))).append(" · ").append(dlq);
+    for (JsonNode modulo : estado.path("modulos")) {
+      JsonNode ultimo = modulo.path("ultimoEvento");
+      sb.append("\n  - ").append(modulo.path("modulo").asText("?")).append(": ");
+      if (ultimo.isMissingNode() || ultimo.isNull()) {
+        sb.append("sin eventos todavía");
+      } else {
+        sb.append("último ")
+            .append(ultimo.path("tipo").asText("?"))
+            .append(" (atraso ")
+            .append(ultimo.path("atrasoMs").asLong(0))
+            .append(" ms)");
+      }
+    }
+    return sb.toString();
+  }
+
+  /** La DLQ es donde van los eventos que no se pudieron aplicar: que tenga algo es una alerta. */
+  private String describirDlq(JsonNode mensajes) {
+    if (mensajes.isMissingNode() || mensajes.isNull()) {
+      return "no se pudo consultar la DLQ";
+    }
+    int cantidad = mensajes.asInt(0);
+    return cantidad > 0
+        ? "⚠️ " + cantidad + " en la DLQ (eventos que no se pudieron aplicar)"
+        : "DLQ vacía";
+  }
+
+  private static String texto(JsonNode nodo) {
+    return nodo.isMissingNode() || nodo.isNull() ? "?" : nodo.asText();
+  }
+
   // ── Ver cómo está todo ─────────────────────────────────────────────────────
 
   @Tool(
       name = "estado_del_sistema",
       description =
           "Un resumen de cómo está el sistema entero en este momento: por dónde se está "
-              + "llegando a los módulos (gateway o directo), si responden el gateway y el "
-              + "Servicio de Consultas, y cuántos productos, donadores, entidades, necesidades, "
-              + "depósitos, stock e insignias hay, y en qué estado. Sirve para mostrar el antes y "
+              + "llegando a los módulos (gateway o directo), si responde el gateway, cómo viene "
+              + "la sincronización del modelo de lectura (si el consumidor escucha, el último "
+              + "evento de cada módulo con su atraso y si hay mensajes en la DLQ), y cuántos "
+              + "productos, donadores, entidades, necesidades, depósitos, stock e insignias hay, "
+              + "y en qué estado. Sirve para mostrar el antes y "
               + "el después de una operación sin tener que consultar módulo por módulo. Ya viene "
               + "redactado: mostrarlo tal cual.")
   public String estadoDelSistema() {
@@ -359,7 +545,7 @@ public class DemoTools {
       puertas.put("Gateway", this::pingGateway);
     }
     if (api.hayServicioDeConsultas()) {
-      puertas.put("Servicio de Consultas", this::pingConsultas);
+      puertas.put("Servicio de Consultas", this::resumenModeloLectura);
     }
     return aLaVez(puertas, nombre -> "⏳ no contestó a tiempo", PLAZO_POR_RONDA_SEGUNDOS);
   }
@@ -495,7 +681,7 @@ public class DemoTools {
 
         **Preparación**
         1. `despertar_servicios` — los de Render se duermen; conviene hacerlo unos minutos antes.
-        2. `reiniciar_sistema` — deja las cuatro bases vacías.
+        2. `reiniciar_sistema` — deja las cuatro bases vacías, y el modelo de lectura también.
         3. `preparar_demo` — carga las precondiciones: identificador, producto, donador, entidad,
            depósito, insignia y misión.
         4. `estado_del_sistema` — para mostrar de dónde se parte.
@@ -509,7 +695,21 @@ public class DemoTools {
         4. `registrar_queja` — sobre la donación entregada en el paso 3: solo se puede quejar de
            una donación entregada. Pasa a CONQUEJA y el donador acumula la queja.
         5. `procesar_donador_en_incentivos` — evalúa la misión, otorga o quita la insignia.
-        6. `consultar_estadisticas_donador` — cómo quedó el donador al final.
+        6. `consultar_ficha_donador` — cómo quedó el donador al final: categoría, misión con lo
+           que le falta, quejas y entidades beneficiadas, en una sola consulta.
+
+        **Las consultas del modelo de lectura (CQRS)**
+        Combinan los cuatro módulos y salen de una base MongoDB que se actualiza por eventos.
+        - `consultar_ficha_donador` — el resumen integral de un donador.
+        - `consultar_necesidades_urgentes` — las necesidades sin cubrir, con el stock de esos
+          productos y lo que ya está asignado sin entregar.
+        - `consultar_estado_depositos` — ocupación, asignaciones, tiempo de entrega y entidades
+          atendidas.
+        - `consultar_calidad_donaciones` — qué categorías reciben más quejas y quién acumula más.
+        - `consultar_modelo_lectura` — si la sincronización viene al día.
+        Tienen consistencia eventual: justo después de una operación pueden no reflejarla.
+        Conviene esperar un par de segundos antes de consultar, y si sigue sin verse, mirar
+        `consultar_modelo_lectura`. `resincronizar_modelo_lectura` vuelve a cargarlo.
 
         Cada operación devuelve un resumen del impacto en todos los módulos y el identificador de
         traza, que sirve para buscar esa misma operación en los logs de Datadog.
