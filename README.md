@@ -1,4 +1,4 @@
-# DonaTrack — Servidor MCP (Entrega 5)
+# DonaTrack — Servidor MCP (Entregas 5 y 6)
 
 Permite operar DonaTrack desde Claude Desktop conversando, sin conocer los endpoints.
 Corre **local** y se comunica con Claude por entrada y salida estándar.
@@ -35,6 +35,33 @@ ventana.
 
 Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 40
 tools disponibles.
+
+### Usar el gateway
+
+Desde la Entrega 6 el MCP consume el sistema **a través del API Gateway**. Se activa con una
+variable en el mismo bloque `"env"`:
+
+```json
+"env": {
+  "DONATRACK_GATEWAY_URL": "https://<el-gateway>.onrender.com"
+}
+```
+
+Con la variable definida, **todos** los pedidos van por el gateway y las URLs directas de cada
+módulo no se usan. El gateway reenvía cada módulo por un prefijo que quita antes de llegar:
+
+| Módulo | Prefijo | Ejemplo |
+|---|---|---|
+| Donaciones | `/donaciones` | `{gw}/donaciones/productos/1` → `/productos/1` |
+| Donadores y Entidades | `/donadores` | `{gw}/donadores/necesidades/1` → `/necesidades/1` |
+| Logística | `/logistica` | `{gw}/logistica/api/depositos` → `/api/depositos` |
+| Incentivos | `/incentivos` | `{gw}/incentivos/donadores/3/insignias` → `/donadores/3/insignias` |
+| Servicio de Consultas | `/consultas` | (lo usan las consultas del modelo de lectura) |
+
+Sin la variable, el MCP llama a cada módulo por su URL directa, como antes: sirve mientras el
+gateway no exista. `quien_soy` y `estado_del_sistema` dicen cuál de los dos modos está activo.
+Con el gateway delante hay dos arranques en frío encadenados en Render (el del gateway y el del
+módulo): `despertar_servicios` despierta primero el gateway y después cada módulo a través de él.
 
 ## Las herramientas
 
@@ -152,7 +179,8 @@ motivo real llega hasta el usuario en vez de perderse en un stack trace.
 
 ## Configuración
 
-Todas tienen valor por defecto apuntando a Render. Se pueden cambiar por variables de entorno:
+Se pasan como variables de entorno, normalmente por el bloque `"env"` del servidor en
+`claude_desktop_config.json`. Todas tienen valor por defecto:
 
 | Variable | Default |
 |---|---|
@@ -161,6 +189,15 @@ Todas tienen valor por defecto apuntando a Render. Se pueden cambiar por variabl
 | `LOGISTICA_URL` | `https://logistica-i4rf.onrender.com` |
 | `INCENTIVOS_URL` | `https://incentivos-wtbd.onrender.com` |
 | `DEPOSITO_DEFAULT` | `DEP-UTN-01` |
+| `DONATRACK_GATEWAY_URL` | vacía: sin gateway, cada módulo por su URL directa |
+| `DONATRACK_PREFIJO_DONACIONES` | `/donaciones` |
+| `DONATRACK_PREFIJO_DONADORES` | `/donadores` |
+| `DONATRACK_PREFIJO_LOGISTICA` | `/logistica` |
+| `DONATRACK_PREFIJO_INCENTIVOS` | `/incentivos` |
+| `DONATRACK_PREFIJO_CONSULTAS` | `/consultas` |
+
+Los prefijos solo se usan si hay gateway, y se pueden escribir con o sin barra. Si
+`DONATRACK_GATEWAY_URL` tiene valor, las cuatro URLs directas de arriba se ignoran.
 
 ## Notas de diseño
 

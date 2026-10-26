@@ -3,6 +3,7 @@ package ar.edu.utn.dds.k3003.mcp;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpEntity;
@@ -40,25 +41,142 @@ public class DonaTrackApi {
   private final ThreadLocal<String> traza = new ThreadLocal<>();
 
   private final RestTemplate rest;
+
+  /** Vacía si no se usa el gateway: en ese caso cada módulo se llama por su URL directa. */
+  private final String gateway;
+
+  // Desde acá, la base de cada módulo ya resuelta: o bien el gateway más el prefijo del módulo,
+  // o bien su URL directa. Las herramientas arman los paths como siempre y no se enteran.
   private final String donaciones;
   private final String donadores;
   private final String logistica;
   private final String incentivos;
 
+  /** El Servicio de Consultas solo existe detrás del gateway; vacía si no se usa. */
+  private final String consultas;
+
+  /**
+   * @param gateway URL del API Gateway, o vacía para llamar a cada módulo directamente. Sirve
+   *     mientras el gateway no exista, y para probar un módulo aislado.
+   * @param prefijoDonaciones lo que el gateway le agrega a cada ruta de Donaciones y quita antes de
+   *     reenviar: {@code {gw}/donaciones/productos/1} llega a Donaciones como {@code /productos/1}.
+   *     Lo mismo vale para los otros prefijos.
+   */
+  @Autowired
   public DonaTrackApi(
       RestTemplate rest,
       @Value("${donatrack.donaciones-url}") String donaciones,
       @Value("${donatrack.donadores-url}") String donadores,
       @Value("${donatrack.logistica-url}") String logistica,
-      @Value("${donatrack.incentivos-url}") String incentivos) {
+      @Value("${donatrack.incentivos-url}") String incentivos,
+      @Value("${donatrack.gateway-url:}") String gateway,
+      @Value("${donatrack.prefijo-donaciones:/donaciones}") String prefijoDonaciones,
+      @Value("${donatrack.prefijo-donadores:/donadores}") String prefijoDonadores,
+      @Value("${donatrack.prefijo-logistica:/logistica}") String prefijoLogistica,
+      @Value("${donatrack.prefijo-incentivos:/incentivos}") String prefijoIncentivos,
+      @Value("${donatrack.prefijo-consultas:/consultas}") String prefijoConsultas) {
     this.rest = rest;
-    this.donaciones = donaciones;
-    this.donadores = donadores;
-    this.logistica = logistica;
-    this.incentivos = incentivos;
+    this.gateway = sinBarraFinal(gateway);
+    boolean porGateway = !this.gateway.isEmpty();
+    this.donaciones = base(porGateway, this.gateway, prefijoDonaciones, donaciones);
+    this.donadores = base(porGateway, this.gateway, prefijoDonadores, donadores);
+    this.logistica = base(porGateway, this.gateway, prefijoLogistica, logistica);
+    this.incentivos = base(porGateway, this.gateway, prefijoIncentivos, incentivos);
+    this.consultas = porGateway ? this.gateway + prefijo(prefijoConsultas) : "";
+  }
+
+  /** Sin gateway: cada módulo por su URL directa, como antes de la Entrega 6. */
+  public DonaTrackApi(
+      RestTemplate rest,
+      String donaciones,
+      String donadores,
+      String logistica,
+      String incentivos) {
+    this(
+        rest,
+        donaciones,
+        donadores,
+        logistica,
+        incentivos,
+        "",
+        "/donaciones",
+        "/donadores",
+        "/logistica",
+        "/incentivos",
+        "/consultas");
+  }
+
+  private static String base(boolean porGateway, String gateway, String prefijo, String directa) {
+    return porGateway ? gateway + prefijo(prefijo) : sinBarraFinal(directa);
+  }
+
+  /**
+   * Deja el prefijo con una barra al principio y ninguna al final, escrito como se escriba:
+   * {@code logistica}, {@code /logistica} y {@code /logistica/} son el mismo. Vacío queda vacío,
+   * por si el gateway enruta un módulo sin prefijo.
+   */
+  private static String prefijo(String valor) {
+    String limpio = sinBarraFinal(valor == null ? "" : valor.trim());
+    return limpio.isEmpty() || limpio.startsWith("/") ? limpio : "/" + limpio;
+  }
+
+  private static String sinBarraFinal(String url) {
+    String limpio = url == null ? "" : url.trim();
+    while (limpio.endsWith("/")) {
+      limpio = limpio.substring(0, limpio.length() - 1);
+    }
+    return limpio;
+  }
+
+  // ── Cómo se está llegando a los módulos ────────────────────────────────────
+
+  public boolean usaGateway() {
+    return !gateway.isEmpty();
+  }
+
+  public String urlGateway() {
+    return gateway;
+  }
+
+  /** La base de un módulo tal como se la está llamando, para poder mostrarla. */
+  public String baseDe(Modulo modulo) {
+    return switch (modulo) {
+      case DONACIONES -> donaciones;
+      case DONADORES -> donadores;
+      case LOGISTICA -> logistica;
+      case INCENTIVOS -> incentivos;
+    };
+  }
+
+  /** Una línea que dice por dónde van los pedidos: sirve para no tener que adivinarlo. */
+  public String descripcionDeConexion() {
+    return usaGateway()
+        ? "los pedidos van por el gateway " + gateway
+        : "sin gateway: los pedidos van directo a cada módulo (la variable DONATRACK_GATEWAY_URL "
+            + "está vacía)";
   }
 
   // ── Direcciones de cada módulo ─────────────────────────────────────────────
+
+  /** Para saber si el gateway está despierto, sin pasar por ningún módulo. */
+  public String getGateway(String path) {
+    if (!usaGateway()) {
+      throw new IllegalStateException("No hay gateway configurado.");
+    }
+    return pedir(HttpMethod.GET, gateway + path, null);
+  }
+
+  /** Solo existe a través del gateway. */
+  public boolean hayServicioDeConsultas() {
+    return !consultas.isEmpty();
+  }
+
+  public String getConsultas(String path) {
+    if (!hayServicioDeConsultas()) {
+      throw new IllegalStateException("El Servicio de Consultas solo se alcanza por el gateway.");
+    }
+    return pedir(HttpMethod.GET, consultas + path, null);
+  }
 
   public String getDonaciones(String path) {
     return pedir(HttpMethod.GET, donaciones + path, null);
@@ -66,6 +184,10 @@ public class DonaTrackApi {
 
   public String postDonaciones(String path, Object body) {
     return pedir(HttpMethod.POST, donaciones + path, body);
+  }
+
+  public String patchDonaciones(String path, Object body) {
+    return pedir(HttpMethod.PATCH, donaciones + path, body);
   }
 
   public String deleteDonaciones(String path) {
@@ -162,6 +284,18 @@ public class DonaTrackApi {
       if (e.getStatusCode().value() == 404) {
         throw new NoEncontrado(explicacion);
       }
+      if (estaSuspendido(e)) {
+        throw new Suspendido(explicacion);
+      }
+      // El gateway dice que el módulo de atrás no aceptó la conexión (503) o no contestó a tiempo
+      // (504). Es lo mismo que un módulo que no responde: en Render casi siempre es un servicio
+      // despertando, así que una consulta se repite una vez, y una operación no.
+      if (esDelGateway(e)) {
+        if (metodo == HttpMethod.GET) {
+          return reintentarConsulta(metodo, url, body, explicacion);
+        }
+        throw new SinRespuesta(explicacion);
+      }
       if (esDeRender(e)) {
         throw new SinRespuesta(explicacion);
       }
@@ -171,17 +305,21 @@ public class DonaTrackApi {
       // servicio dormido se pierde despertándolo. Una operación que modifica datos NO se
       // reintenta: sin respuesta no se sabe si llegó, y repetirla puede duplicarla.
       if (metodo == HttpMethod.GET) {
-        log.info("Reintentando {} {} (el módulo estaba dormido)", metodo, url);
-        try {
-          String resp =
-              rest.exchange(url, metodo, new HttpEntity<>(body, cabeceras()), String.class)
-                  .getBody();
-          return resp == null || resp.isBlank() ? "Operación realizada." : resp;
-        } catch (RuntimeException segunda) {
-          throw new SinRespuesta(sinRespuesta(url));
-        }
+        return reintentarConsulta(metodo, url, body, sinRespuesta(url));
       }
       throw new SinRespuesta(sinRespuesta(url));
+    }
+  }
+
+  /** La segunda vuelta de una consulta que no obtuvo respuesta; si tampoco, queda sin respuesta. */
+  private String reintentarConsulta(HttpMethod metodo, String url, Object body, String siFalla) {
+    log.info("Reintentando {} {} (el módulo estaba dormido)", metodo, url);
+    try {
+      String resp =
+          rest.exchange(url, metodo, new HttpEntity<>(body, cabeceras()), String.class).getBody();
+      return resp == null || resp.isBlank() ? "Operación realizada." : resp;
+    } catch (RuntimeException segunda) {
+      throw new SinRespuesta(siFalla);
     }
   }
 
@@ -228,6 +366,15 @@ public class DonaTrackApi {
           + ". Si ese otro módulo es un servicio de Render dormido, 'despertar_servicios' lo "
           + "despierta y después se puede reintentar.";
     }
+    if (estaSuspendido(e)) {
+      return "El servicio está suspendido en Render (" + url + "). No está dormido: lo suspendió "
+          + "su dueño, así que 'despertar_servicios' no lo arregla y repetir el pedido tampoco. "
+          + "Hay que reanudarlo desde el panel de Render, y eso solo lo puede hacer quien lo "
+          + "administra.";
+    }
+    if (esDelGateway(e)) {
+      return mensajeDelGateway(e, url);
+    }
     if (esDeRender(e)) {
       return "Render no pudo comunicarse con el módulo ("
           + url
@@ -250,6 +397,80 @@ public class DonaTrackApi {
    */
   private static boolean esDeRender(HttpStatusCodeException e) {
     return e.getStatusCode().value() == 502 && !esJson(e.getResponseBodyAsString());
+  }
+
+  /**
+   * Render contesta 503 «Service Suspended» cuando el dueño del servicio lo suspendió desde el
+   * panel. Se reconoce por el header {@code x-render-routing: suspend-by-user} o, si un proxy lo
+   * sacó, por el texto de la página.
+   *
+   * <p>Es lo que más se parece a un servicio dormido y lo que menos se le parece en la solución: un
+   * dormido despierta solo con el pedido; uno suspendido no despierta nunca hasta que lo reanudan.
+   */
+  private static boolean estaSuspendido(HttpStatusCodeException e) {
+    if (e.getStatusCode().value() != 503) {
+      return false;
+    }
+    org.springframework.http.HttpHeaders headers = e.getResponseHeaders();
+    String enrutado = headers == null ? null : headers.getFirst("x-render-routing");
+    String cuerpo = e.getResponseBodyAsString();
+    return "suspend-by-user".equalsIgnoreCase(enrutado)
+        || (cuerpo != null && cuerpo.contains("Service Suspended"));
+  }
+
+  /**
+   * Un 503 o 504 que armó el gateway porque el módulo de atrás no le contestó.
+   *
+   * <p>El gateway distingue dos casos y los dos traen el mismo JSON de tres campos,
+   * {@code {"error": ..., "modulo": ..., "traceId": ...}}: 503 si el módulo no aceptó la conexión y
+   * 504 si no contestó dentro del plazo. Lo que lo delata es {@code modulo}: ningún módulo lo manda.
+   *
+   * <p>No se reconoce por «un 5xx con otro JSON» porque un módulo también puede contestar 503 por
+   * su cuenta —por ejemplo, sin RabbitMQ configurado—, y eso no es que esté dormido: es un motivo
+   * que hay que mostrar tal cual. Si el módulo sí contestó, el gateway pasa el código y el cuerpo
+   * sin tocarlos, y se tratan como siempre.
+   */
+  private static boolean esDelGateway(HttpStatusCodeException e) {
+    int codigo = e.getStatusCode().value();
+    return (codigo == 503 || codigo == 504) && moduloDelGateway(e) != null;
+  }
+
+  /** El valor de {@code modulo} en el cuerpo de error del gateway, o null si no es ese cuerpo. */
+  private static String moduloDelGateway(HttpStatusCodeException e) {
+    try {
+      com.fasterxml.jackson.databind.JsonNode nodo = MAPPER.readTree(e.getResponseBodyAsString());
+      if (nodo != null && nodo.isObject() && nodo.path("modulo").isTextual()) {
+        String modulo = nodo.path("modulo").asText();
+        return modulo.isBlank() ? null : modulo;
+      }
+    } catch (Exception noEsJson) {
+      // Una página de Render o texto plano: no es el cuerpo del gateway.
+    }
+    return null;
+  }
+
+  private static String mensajeDelGateway(HttpStatusCodeException e, String url) {
+    String modulo = moduloDelGateway(e);
+    com.fasterxml.jackson.databind.JsonNode cuerpo;
+    try {
+      cuerpo = MAPPER.readTree(e.getResponseBodyAsString());
+    } catch (Exception inalcanzable) {
+      cuerpo = MAPPER.createObjectNode();
+    }
+    String motivo = cuerpo.path("error").asText("");
+    String traza = cuerpo.path("traceId").asText("");
+    String que =
+        e.getStatusCode().value() == 504
+            ? "El módulo «" + modulo + "» no contestó a tiempo a través del gateway"
+            : "El gateway no pudo conectarse con el módulo «" + modulo + "»";
+    return que
+        + " ("
+        + url
+        + ")"
+        + (motivo.isBlank() ? "" : ": " + motivo)
+        + (traza.isBlank() ? "" : " [traza " + traza + "]")
+        + ". "
+        + CONSEJO_DESPERTAR;
   }
 
   private static boolean esJson(String cuerpo) {
@@ -313,6 +534,19 @@ public class DonaTrackApi {
    */
   public static class NoEncontrado extends RuntimeException {
     public NoEncontrado(String mensaje) {
+      super(mensaje);
+    }
+  }
+
+  /**
+   * El servicio está suspendido en Render por su dueño.
+   *
+   * <p>Se distingue de {@link SinRespuesta} porque la respuesta correcta es opuesta: a un servicio
+   * dormido se lo despierta y se reintenta; a uno suspendido no se lo despierta desde acá, y
+   * reintentar solo hace perder tiempo.
+   */
+  public static class Suspendido extends RuntimeException {
+    public Suspendido(String mensaje) {
       super(mensaje);
     }
   }

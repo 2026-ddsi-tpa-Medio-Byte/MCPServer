@@ -62,46 +62,116 @@ public class DemoTools {
   @Tool(
       name = "despertar_servicios",
       description =
-          "Despierta los cuatro módulos y dice cuáles responden. En Render los servicios del "
-              + "plan gratuito se duermen sin tráfico y el primer pedido puede tardar un minuto o "
-              + "fallar. Conviene usarlo antes de una demostración y cada vez que un módulo "
-              + "conteste que no responde.")
+          "Despierta el sistema y dice qué responde: el gateway (si se usa) y los cuatro módulos. "
+              + "En Render los servicios del plan gratuito se duermen sin tráfico y el primer "
+              + "pedido puede tardar un minuto o fallar. Con gateway se despierta primero a él y "
+              + "después a cada módulo a través de él. Conviene usarlo antes de una demostración y "
+              + "cada vez que algo conteste que no responde. Distingue un servicio dormido (se "
+              + "despierta repitiendo la herramienta) de uno suspendido en Render por su dueño (no "
+              + "se despierta desde acá).")
   public String despertarServicios() {
+    StringBuilder sb = new StringBuilder("**Estado de los módulos**\n\n");
+    sb.append("Conexión: ").append(api.descripcionDeConexion()).append(".\n\n");
+
+    // El gateway es la puerta: si duerme, los pedidos a los módulos se pierden en él y no se puede
+    // saber nada de lo que hay detrás. Se lo despierta solo, primero, con su propio plazo.
+    // Los dos plazos suman 40 segundos, por debajo del corte de 60 de Claude.
+    if (api.usaGateway()) {
+      Map<String, Supplier<String>> puerta = new LinkedHashMap<>();
+      puerta.put("Gateway", this::pingGateway);
+      String gateway =
+          aLaVez(puerta, nombre -> ARRANCANDO, PLAZO_DESPERTAR_SEGUNDOS).get("Gateway");
+      sb.append("- **Gateway** — ").append(gateway).append("\n");
+      if (!gateway.startsWith("✅")) {
+        sb.append(
+            "\nEl gateway todavía no responde, así que no se puede despertar a los módulos a "
+                + "través de él. Este pedido ya empujó su arranque: **repetí esta herramienta** "
+                + "hasta que el gateway conteste, y recién ahí se despiertan los módulos.\n");
+        return sb.toString();
+      }
+    }
+
     Map<String, Supplier<String>> pings = new LinkedHashMap<>();
     pings.put("Donaciones", () -> ping(() -> api.getDonaciones("/productos")));
     pings.put("Donadores", () -> ping(() -> api.getDonadores("/donadores")));
     pings.put("Logística", () -> ping(() -> api.getLogistica("/depositos")));
     pings.put("Incentivos", () -> ping(() -> api.getIncentivos("/insignias")));
+    if (api.hayServicioDeConsultas()) {
+      pings.put("Servicio de Consultas", this::pingConsultas);
+    }
 
     // Al llegar al plazo se deja de esperar, pero el pedido sigue viajando: aunque no se vea la
     // respuesta, alcanza para que Render termine de arrancar el servicio.
     Map<String, String> resultados =
-        aLaVez(
-            pings,
-            modulo -> "⏳ arrancando (el pedido ya lo despertó)",
-            PLAZO_DESPERTAR_SEGUNDOS);
-
-    StringBuilder sb = new StringBuilder("**Estado de los módulos**\n\n");
+        aLaVez(pings, modulo -> ARRANCANDO, PLAZO_DESPERTAR_SEGUNDOS);
     resultados.forEach(
         (modulo, resultado) -> sb.append("- **").append(modulo).append("** — ").append(resultado).append("\n"));
 
-    boolean faltaAlguno = resultados.values().stream().anyMatch(r -> !r.startsWith("✅"));
+    boolean suspendido = resultados.values().stream().anyMatch(r -> r.startsWith("⛔"));
+    // Lo que todavía no existe (⚪) no cuenta como algo que falta despertar.
+    boolean faltaAlguno =
+        resultados.values().stream().anyMatch(r -> !r.startsWith("✅") && !r.startsWith("⚪") && !r.startsWith("⛔"));
+    if (suspendido) {
+      sb.append(
+          "\n**Hay servicios suspendidos en Render.** No están dormidos: los suspendió su dueño "
+              + "y no se despiertan desde acá ni repitiendo la herramienta. Hay que reanudarlos "
+              + "desde el panel de Render, y solo lo puede hacer quien los administra.\n");
+    }
     if (faltaAlguno) {
       sb.append(
           "\nArrancar de cero le lleva a Render uno o dos minutos, más de lo que se puede esperar "
-              + "en una sola consulta. **Repetí esta herramienta hasta que los cuatro digan que "
+              + "en una sola consulta. **Repetí esta herramienta hasta que todos digan que "
               + "responden**: cada intento los empuja un poco más.\n");
-    } else {
-      sb.append("\nLos cuatro están despiertos. Se duermen de nuevo tras un rato sin uso.\n");
+    } else if (!suspendido) {
+      sb.append("\nTodo está despierto. Se duerme de nuevo tras un rato sin uso.\n");
     }
     return sb.toString();
   }
+
+  /** Lo que se muestra de lo que no llegó a contestar en el plazo. */
+  private static final String ARRANCANDO = "⏳ arrancando (el pedido ya lo despertó)";
 
   private String ping(Supplier<String> consulta) {
     long inicio = System.currentTimeMillis();
     try {
       consulta.get();
       return "✅ responde (" + (System.currentTimeMillis() - inicio) / 1000 + "s)";
+    } catch (DonaTrackApi.Suspendido e) {
+      return "⛔ suspendido en Render por su dueño: no se despierta desde acá";
+    } catch (Exception e) {
+      return "⚠️ no responde";
+    }
+  }
+
+  /**
+   * El gateway se pregunta por su health check. Si contesta cualquier cosa —aun un 404 porque no
+   * lo expone— está despierto: es lo único que se quiere saber.
+   */
+  private String pingGateway() {
+    return ping(
+        () -> {
+          try {
+            return api.getGateway("/actuator/health");
+          } catch (DonaTrackApi.NoEncontrado sinHealth) {
+            return "responde, pero no expone /actuator/health";
+          }
+        });
+  }
+
+  /**
+   * El Servicio de Consultas todavía no existe en todos los entornos. Un 404 del gateway no es una
+   * falla: es que la ruta {@code /consultas} aún no está publicada, o que no tiene ese health
+   * check. Se dice, sin contarlo como algo que falta despertar.
+   */
+  private String pingConsultas() {
+    long inicio = System.currentTimeMillis();
+    try {
+      api.getConsultas("/actuator/health");
+      return "✅ responde (" + (System.currentTimeMillis() - inicio) / 1000 + "s)";
+    } catch (DonaTrackApi.NoEncontrado e) {
+      return "⚪ el gateway contestó 404: todavía no está publicado, o no expone /actuator/health";
+    } catch (DonaTrackApi.Suspendido e) {
+      return "⛔ suspendido en Render por su dueño: no se despierta desde acá";
     } catch (Exception e) {
       return "⚠️ no responde";
     }
@@ -233,11 +303,17 @@ public class DemoTools {
   @Tool(
       name = "estado_del_sistema",
       description =
-          "Un resumen de cómo está el sistema entero en este momento: cuántos productos, "
-              + "donadores, entidades, necesidades, depósitos, stock e insignias hay, y en qué "
-              + "estado. Sirve para mostrar el antes y el después de una operación sin tener que "
-              + "consultar módulo por módulo. Ya viene redactado: mostrarlo tal cual.")
+          "Un resumen de cómo está el sistema entero en este momento: por dónde se está "
+              + "llegando a los módulos (gateway o directo), si responden el gateway y el "
+              + "Servicio de Consultas, y cuántos productos, donadores, entidades, necesidades, "
+              + "depósitos, stock e insignias hay, y en qué estado. Sirve para mostrar el antes y "
+              + "el después de una operación sin tener que consultar módulo por módulo. Ya viene "
+              + "redactado: mostrarlo tal cual.")
   public String estadoDelSistema() {
+    // La conexión se mira a la vez que los listados: si se esperara después, sumaría su plazo.
+    CompletableFuture<Map<String, String>> conexion =
+        CompletableFuture.supplyAsync(this::estadoDeLaConexion, Hilos.ESPERA);
+
     // Primera ronda: los listados de cada módulo, todos a la vez.
     Map<String, Supplier<String>> listados = new LinkedHashMap<>();
     listados.put("productos", () -> api.getDonaciones("/productos"));
@@ -258,11 +334,34 @@ public class DemoTools {
             datos.get("depositos") != null);
 
     StringBuilder sb = new StringBuilder("**Estado del sistema**\n\n");
+    sb.append("- **Conexión** — ").append(api.descripcionDeConexion()).append("\n");
+    Map<String, String> puertas = conexion.join();
+    puertas.forEach(
+        (nombre, estado) -> sb.append("- **").append(nombre).append("** — ").append(estado).append("\n"));
     sb.append("- **Donaciones** — ").append(resumenDonaciones(datos)).append("\n");
     sb.append("- **Donadores** — ").append(resumenDonadores(datos, porProducto)).append("\n");
     sb.append("- **Logística** — ").append(resumenLogistica(datos, porProducto)).append("\n");
     sb.append("- **Incentivos** — ").append(resumenIncentivos(datos)).append("\n");
+
+    String gateway = puertas.get("Gateway");
+    if (gateway != null && !gateway.startsWith("✅")) {
+      sb.append(
+          "\n> Con el gateway sin responder, todos los módulos figuran como «no respondió» aunque "
+              + "estén despiertos: los pedidos pasan por él. Ejecutar `despertar_servicios`.\n");
+    }
     return sb.toString();
+  }
+
+  /** Vacío si no se usa gateway: sin él no hay una puerta que preguntarle. */
+  private Map<String, String> estadoDeLaConexion() {
+    Map<String, Supplier<String>> puertas = new LinkedHashMap<>();
+    if (api.usaGateway()) {
+      puertas.put("Gateway", this::pingGateway);
+    }
+    if (api.hayServicioDeConsultas()) {
+      puertas.put("Servicio de Consultas", this::pingConsultas);
+    }
+    return aLaVez(puertas, nombre -> "⏳ no contestó a tiempo", PLAZO_POR_RONDA_SEGUNDOS);
   }
 
   /** Lo que se junta de la pasada por los productos. */

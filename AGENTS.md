@@ -54,6 +54,20 @@ DonaTrackApi      único punto de contacto con los módulos
 Las descripciones de las tools están escritas **para que las lea un modelo**: dicen cuándo usar
 cada una y qué hace falta saber antes. Mantener ese estilo al agregar nuevas.
 
+## El gateway y los servicios suspendidos (Entrega 6)
+
+**El gateway vive solo en `DonaTrackApi`.** Con `donatrack.gateway-url` (variable
+`DONATRACK_GATEWAY_URL`) la base de cada módulo es el gateway más su prefijo (`/donaciones`,
+`/donadores`, `/logistica`, `/incentivos`); vacía, es la URL directa de siempre. Las tools arman
+sus paths sin enterarse: no poner el prefijo en ninguna. Con gateway hay dos arranques en frío
+encadenados, así que `despertar_servicios` despierta primero el gateway y después los módulos a
+través de él; los dos plazos suman 40 segundos, por debajo del corte de 60.
+
+**Dormido no es suspendido.** Un servicio dormido de Render despierta con el primer pedido. Uno
+suspendido por su dueño contesta 503 con el header `x-render-routing: suspend-by-user` y no
+despierta nunca hasta que lo reanudan desde el panel: `DonaTrackApi.Suspendido`, que
+`despertar_servicios` marca aparte (⛔) en vez de pedir que se repita.
+
 ## Probarlo sin Claude Desktop
 
 Empaquetar y hablarle el protocolo directamente:
