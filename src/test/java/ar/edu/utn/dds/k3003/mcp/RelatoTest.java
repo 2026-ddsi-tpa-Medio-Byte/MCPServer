@@ -47,7 +47,9 @@ class RelatoTest {
     api = new DonaTrackApi(rest, DONACIONES, DONADORES, LOGISTICA, INCENTIVOS);
     sesion = new SesionMcp();
     sesion.iniciarComoAdmin("admin");
-    operaciones = new OperacionTools(api, "DEP-UTN-01", sesion, true);
+    // Sin esperar al worker: con la ventana real, cada donación sin asignar tardaría 20 segundos.
+    // Los tests que prueban la espera arman su propio OperacionTools.
+    operaciones = new OperacionTools(api, "DEP-UTN-01", sesion, true, 0, 0);
     demo = new DemoTools(api, sesion);
   }
 
@@ -73,6 +75,7 @@ class RelatoTest {
                 MediaType.APPLICATION_JSON));
 
     esperarPaquete("paq-12", "7");
+    esperarDestino("7", "3", "Comedor Solidario");
 
     String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
 
@@ -83,6 +86,9 @@ class RelatoTest {
     assertTrue(
         relato.contains("armó el paquete paq-12 y lo asignó a la necesidad nº 7"),
         "el destino se lee del paquete, que es un dato, no se deduce del stock");
+    assertTrue(
+        relato.contains("paq-12 → necesidad nº 7 «Arroz para el comedor» → entidad «Comedor Solidario» (nº 3)"),
+        "el relato termina diciendo a qué entidad se asignó, con su razón social");
     assertTrue(
         relato.contains("no** se satisface al donar"),
         "es la confusión más frecuente: conviene aclararla en el momento");
@@ -164,7 +170,11 @@ class RelatoTest {
 
     String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
 
-    assertTrue(relato.contains("todavía la está procesando"));
+    assertTrue(
+        relato.contains("todavía no la asignó; consultá en unos segundos"),
+        "es la frase que se le pide al relato cuando el worker no terminó");
+    assertTrue(relato.contains("consultar_asignaciones"), "y con qué herramienta se vuelve a mirar");
+    assertFalse(relato.contains("Destino"), "sin asignación no hay destino que contar");
     assertFalse(
         relato.contains("lo asignó"),
         "que el stock no haya subido no prueba nada si el worker no terminó");
@@ -185,11 +195,59 @@ class RelatoTest {
         .andExpect(header("X-Trace-Id", Matchers.startsWith("mcp-")))
         .andRespond(withSuccess("{\"id\":\"12\"}", MediaType.APPLICATION_JSON));
     esperarPaquete("paq-12", "7");
+    // El relato sigue el paquete hasta la necesidad y la entidad: son parte de lo que se pide.
+    esperarDestino("7", "3", "Comedor Solidario");
 
     String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
 
     servidor.verify();
     assertTrue(relato.contains("traza `mcp-"), "hay que mostrar la traza para poder buscarla");
+  }
+
+  @Test
+  @DisplayName("Si el worker tarda, la donación espera a que aparezca la asignación y cuenta a dónde fue")
+  void esperaAlWorkerHastaQueAsigna() {
+    esperarProducto("3", "Arroz");
+    esperarNecesidades("3", "[]");
+    esperarStock("3", 0, 0);
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withSuccess("{\"id\":\"12\",\"cantidad\":10}", MediaType.APPLICATION_JSON));
+    // Primero el worker no terminó (404); en el segundo intento ya creó la asignación.
+    servidor
+        .expect(ExpectedCount.once(), requestTo(LOGISTICA + "/api/asignaciones/paquetes/paq-12"))
+        .andRespond(withStatus(HttpStatus.NOT_FOUND).body("no existe"));
+    esperarPaquete("paq-12", "7");
+    esperarDestino("7", "3", "Comedor Solidario");
+    // Con ventana: espera de verdad, aunque a un ritmo que no demora el test.
+    OperacionTools conEspera = new OperacionTools(api, "DEP-UTN-01", sesion, true, 5_000, 10);
+
+    String relato = conEspera.registrarDonacion("1", "3", 10, "Diez kilos", null);
+
+    assertTrue(relato.contains("entidad «Comedor Solidario»"), "la asignación apareció en el segundo intento");
+    assertFalse(relato.contains("todavía no la asignó"), "ya la asignó: no hay que decir lo contrario");
+  }
+
+  @Test
+  @DisplayName("Si la necesidad no se puede leer, el destino dice hasta dónde se llegó sin inventar la entidad")
+  void destinoSinLeerLaNecesidad() {
+    esperarProducto("3", "Arroz");
+    esperarNecesidades("3", "[]");
+    esperarStock("3", 0, 0);
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones"))
+        .andRespond(withSuccess("{\"id\":\"12\",\"cantidad\":10}", MediaType.APPLICATION_JSON));
+    esperarPaquete("paq-12", "7");
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONADORES + "/necesidades/7"))
+        .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR).body("boom"));
+
+    String relato = operaciones.registrarDonacion("1", "3", 10, "Diez kilos", null);
+
+    assertTrue(relato.contains("paq-12 → necesidad nº 7 (no se pudo leer en Donadores"));
+    assertFalse(relato.contains("entidad «"), "no se sabe qué entidad la pidió: no se dice");
+    assertTrue(relato.contains("Sin respuesta de: Donadores"));
   }
 
   // ── Entrega ────────────────────────────────────────────────────────────────
@@ -871,6 +929,24 @@ class RelatoTest {
                     + "\",\"necesidadid\":\""
                     + necesidad
                     + "\",\"estado\":\"ASIGNADA\",\"origen\":\"MATCHMAKING\",\"cantidad\":10}",
+                MediaType.APPLICATION_JSON));
+  }
+
+  /** La necesidad a la que fue el paquete y la entidad que la pidió, como las devuelve Donadores. */
+  private void esperarDestino(String necesidadId, String entidadId, String razonSocial) {
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONADORES + "/necesidades/" + necesidadId))
+        .andRespond(
+            withSuccess(
+                "{\"id\":\"" + necesidadId + "\",\"entidadID\":\"" + entidadId
+                    + "\",\"descripcion\":\"Arroz para el comedor\",\"cantidadObjetivo\":20,"
+                    + "\"cantidadActual\":0}",
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(DONADORES + "/entidades/" + entidadId))
+        .andRespond(
+            withSuccess(
+                "{\"id\":\"" + entidadId + "\",\"razonSocial\":\"" + razonSocial + "\"}",
                 MediaType.APPLICATION_JSON));
   }
 

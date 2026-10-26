@@ -33,8 +33,39 @@ Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
 ventana.
 
-Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 40
+Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 45
 tools disponibles.
+
+### Contraseña de administrador
+
+Las operaciones que modifican datos piden iniciar sesión como ADMIN (`iniciar_sesion`). La
+contraseña **no tiene valor por defecto**: este repositorio es público y una clave escrita acá la
+conocería cualquiera. Hasta que se define, el ingreso como ADMIN está deshabilitado y la
+herramienta lo dice (como DONADOR se puede entrar igual).
+
+Se pasa por el bloque `"env"` del servidor, en el mismo `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "donatrack": {
+      "command": "java",
+      "args": ["-jar", "C:\\ruta\\al\\donatrack-mcp-1.0-SNAPSHOT.jar"],
+      "env": {
+        "DONATRACK_ADMIN_PASSWORD": "elegir-una-clave-propia"
+      }
+    }
+  }
+}
+```
+
+Reemplazar el valor por una clave propia (no copiar el ejemplo tal cual) y **reiniciar Claude
+Desktop del todo**. Ese archivo vive en la máquina de quien lo usa y no se sube al repositorio:
+no pegarle ahí una clave real al `claude_desktop_config.json` de ejemplo que está acá.
+
+La contraseña no se escribe en ningún log del servidor ni aparece en ninguna respuesta. La
+escribe quien la tipea en la conversación, así que Claude Desktop puede guardarla en sus propios
+registros: conviene una clave que no se use para nada más.
 
 ### Usar el gateway
 
@@ -43,7 +74,8 @@ variable en el mismo bloque `"env"`:
 
 ```json
 "env": {
-  "DONATRACK_GATEWAY_URL": "https://<el-gateway>.onrender.com"
+  "DONATRACK_GATEWAY_URL": "https://<el-gateway>.onrender.com",
+  "DONATRACK_ADMIN_PASSWORD": "elegir-una-clave-propia"
 }
 ```
 
@@ -85,6 +117,7 @@ vista de quien pregunta es la misma intención.
 | `consultar_depositos_y_stock` | Depósitos con su stock real, el de uno por producto, o el de un producto |
 | `consultar_asignaciones` | Paquetes de Logística: por paquete, donación, estado o necesidad |
 | `consultar_insignias_y_misiones` | El catálogo de Incentivos |
+| `consultar_mision_de_donador` | La misión en curso de un donador y sus insignias |
 
 ### Operación
 
@@ -102,6 +135,10 @@ vista de quien pregunta es la misma intención.
 | `eliminar_necesidad` | Borrar una necesidad |
 | `procesar_donador_en_incentivos` | Forzar la evaluación de una misión |
 | `reportar_entrega` | Cerrar el circuito: la donación se da por cumplida |
+| `cambiar_estado_donacion` | INGRESADA, ACEPTADA o CONQUEJA, a mano |
+| `crear_insignia` | Alta de insignia en Incentivos |
+| `crear_mision` | Alta de misión en Incentivos |
+| `asignar_mision_a_donador` | Dejarle una misión en curso a un donador |
 | `crear_deposito` | Alta de depósito en Logística |
 | `modificar_deposito` | Cambiar nombre, dirección, capacidad o algoritmo |
 | `eliminar_deposito` | Borrar un depósito sin stock |
@@ -180,7 +217,7 @@ motivo real llega hasta el usuario en vez de perderse en un stack trace.
 ## Configuración
 
 Se pasan como variables de entorno, normalmente por el bloque `"env"` del servidor en
-`claude_desktop_config.json`. Todas tienen valor por defecto:
+`claude_desktop_config.json`. Salvo la contraseña de admin, todas tienen valor por defecto:
 
 | Variable | Default |
 |---|---|
@@ -195,6 +232,7 @@ Se pasan como variables de entorno, normalmente por el bloque `"env"` del servid
 | `DONATRACK_PREFIJO_LOGISTICA` | `/logistica` |
 | `DONATRACK_PREFIJO_INCENTIVOS` | `/incentivos` |
 | `DONATRACK_PREFIJO_CONSULTAS` | `/consultas` |
+| `DONATRACK_ADMIN_PASSWORD` | **sin valor por defecto**: vacía, el ingreso como ADMIN está deshabilitado |
 
 Los prefijos solo se usan si hay gateway, y se pueden escribir con o sin barra. Si
 `DONATRACK_GATEWAY_URL` tiene valor, las cuatro URLs directas de arriba se ignoran.

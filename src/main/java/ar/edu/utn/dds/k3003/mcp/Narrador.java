@@ -60,6 +60,7 @@ class Narrador {
         linea(
             "Logística",
             efectoEnLogistica(antes, despues, numero(creada, "cantidad"), texto(creada, "id"))));
+    sb.append(destino(despues));
     sb.append(necesidades(antes, despues, nombreProducto));
 
     sb.append(
@@ -107,14 +108,52 @@ class Narrador {
           + stock;
     }
     if (despues.asignacionPendiente) {
-      return "todavía la está procesando: lo hace en segundo plano, con un worker, y el paquete "
-          + "paq-"
+      return "todavía no la asignó; consultá en unos segundos (`consultar_asignaciones` con "
+          + "donacionId "
+          + donacionId
+          + "). Lo hace en segundo plano, con un worker, y el paquete paq-"
           + donacionId
           + " tarda unos segundos en aparecer."
           + stock;
     }
     return "no se pudo consultar el paquete, así que no se puede afirmar a dónde fue la donación."
         + stock;
+  }
+
+  /**
+   * A quién llegó la donación: paquete → necesidad → entidad con su razón social.
+   *
+   * <p>Solo se escribe lo que se pudo ver. Si la asignación todavía no existe no hay nada que
+   * decir —eso ya lo cuenta la línea de Logística—, y si falló la lectura de la necesidad o de la
+   * entidad se dice hasta dónde se llegó, sin completar con suposiciones.
+   */
+  private static String destino(Panorama despues) {
+    if (despues.asignacion == null) {
+      return "";
+    }
+    String paquete = Panorama.alguno(despues.asignacion, "paqueteid", "paqueteID");
+    String necesidadId = Panorama.alguno(despues.asignacion, "necesidadid", "necesidadID");
+    StringBuilder cadena = new StringBuilder(paquete).append(" → necesidad nº ").append(necesidadId);
+    if (despues.necesidadAsignada == null) {
+      cadena.append(" (no se pudo leer en Donadores, así que no se sabe qué entidad la pidió)");
+      return linea("Destino", cadena + ".");
+    }
+    String descripcion = texto(despues.necesidadAsignada, "descripcion");
+    if (!descripcion.isBlank()) {
+      cadena.append(" «").append(descripcion).append("»");
+    }
+    String entidadId = texto(despues.necesidadAsignada, "entidadID");
+    if (despues.entidadAsignada == null) {
+      cadena.append(" → entidad nº ").append(entidadId).append(" (no se pudo leer su razón social)");
+      return linea("Destino", cadena + ".");
+    }
+    cadena
+        .append(" → entidad «")
+        .append(texto(despues.entidadAsignada, "razonSocial"))
+        .append("» (nº ")
+        .append(entidadId)
+        .append(")");
+    return linea("Destino", cadena + ".");
   }
 
   // ── Entrega ────────────────────────────────────────────────────────────────

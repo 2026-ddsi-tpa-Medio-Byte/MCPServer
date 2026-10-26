@@ -42,8 +42,8 @@ o traer uno: para quien pregunta es la misma intención, y dar dos herramientas 
 que el modelo elija mal más seguido.
 
 ```
-ConsultaTools     12 tools de solo lectura
-OperacionTools    18 tools que modifican estado
+ConsultaTools     13 tools de solo lectura
+OperacionTools    22 tools que modifican estado
 AuthTools          3 tools de sesión
 SeedTools          2 tools que cargan precondiciones (todo, o un módulo solo)
 DemoTools          5 tools para conducir la demostración
@@ -54,7 +54,7 @@ DonaTrackApi      único punto de contacto con los módulos
 Las descripciones de las tools están escritas **para que las lea un modelo**: dicen cuándo usar
 cada una y qué hace falta saber antes. Mantener ese estilo al agregar nuevas.
 
-## El gateway y los servicios suspendidos (Entrega 6)
+## El gateway, la contraseña y los servicios suspendidos (Entrega 6)
 
 **El gateway vive solo en `DonaTrackApi`.** Con `donatrack.gateway-url` (variable
 `DONATRACK_GATEWAY_URL`) la base de cada módulo es el gateway más su prefijo (`/donaciones`,
@@ -62,6 +62,11 @@ cada una y qué hace falta saber antes. Mantener ese estilo al agregar nuevas.
 sus paths sin enterarse: no poner el prefijo en ninguna. Con gateway hay dos arranques en frío
 encadenados, así que `despertar_servicios` despierta primero el gateway y después los módulos a
 través de él; los dos plazos suman 40 segundos, por debajo del corte de 60.
+
+**La contraseña de admin no tiene valor por defecto** (`DONATRACK_ADMIN_PASSWORD`): este
+repositorio es público. Vacía, el ingreso de admin queda deshabilitado y la tool dice cómo
+habilitarlo. No agregarle un default, ni escribirla en un log o en una respuesta: hay tests que
+lo vigilan.
 
 **Dormido no es suspendido.** Un servicio dormido de Render despierta con el primer pedido. Uno
 suspendido por su dueño contesta 503 con el header `x-render-routing: suspend-by-user` y no
@@ -78,7 +83,7 @@ java -jar target/donatrack-mcp-1.0-SNAPSHOT.jar
 ```
 
 Enviando por stdin un `initialize` y después `tools/list` tiene que responder el handshake y las
-40 herramientas. Si imprime cualquier otra cosa en pantalla, eso está rompiendo el protocolo.
+45 herramientas. Si imprime cualquier otra cosa en pantalla, eso está rompiendo el protocolo.
 
 ## Antes de terminar un cambio
 
@@ -86,4 +91,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-66 tests, 0 fallos.
+114 tests, 0 fallos.

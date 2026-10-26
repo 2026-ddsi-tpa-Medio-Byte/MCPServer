@@ -46,9 +46,12 @@ public class ConsultaTools {
   @Tool(
       name = "consultar_estadisticas_donador",
       description =
-          "Estadísticas de un donador: su categoría, las insignias que ganó y la misión que tiene "
-              + "en curso. Usar cuando pregunten por el progreso, los logros o el nivel de "
-              + "alguien.")
+          "Estadísticas de un donador: su estado, su categoría, el id de la misión que tiene en "
+              + "curso y los ids de las insignias que ganó. Usar cuando pregunten por el nivel o "
+              + "los logros de alguien. Para armar un resumen completo de un donador se combina: "
+              + "esta herramienta (categoría), 'consultar_mision_de_donador' (qué misión tiene y "
+              + "cuánto le falta), 'consultar_quejas_de_donador' (quejas) y "
+              + "'consultar_donaciones' con su número (cuántas donaciones tiene y en qué estado).")
   public String consultarEstadisticas(
       @ToolParam(description = "Número del donador") String donadorId) {
     return api.getDonadores("/donadores/" + donadorId.trim() + "/estadisticas");
@@ -89,9 +92,16 @@ public class ConsultaTools {
       name = "consultar_necesidades",
       description =
           "Las necesidades que tienen las entidades. Con un id devuelve esa necesidad con su "
-              + "progreso (cuánto se cubrió del objetivo). Con un producto devuelve las que "
-              + "siguen sin cubrirse de ese producto, que es lo que mira Logística para decidir "
-              + "a quién asignarle una donación.")
+              + "progreso (cuánto se cubrió del objetivo). Con un producto devuelve las de ese "
+              + "producto, que es lo que mira Logística para decidir a quién asignarle una "
+              + "donación. Cada una trae nivelDeUrgencia (del 1 al 10, más alto es más urgente), "
+              + "cantidadObjetivo y cantidadActual: está sin cubrir si cantidadActual es menor que "
+              + "cantidadObjetivo, y lo que falta es la diferencia. No hay un listado de todas: "
+              + "para ver las urgentes sin cubrir de todo el sistema se lista el catálogo con "
+              + "'consultar_productos', se consulta cada producto con esta herramienta, y se "
+              + "filtra por urgencia y faltante. Para saber cuánto stock hay de esos productos, "
+              + "'consultar_depositos_y_stock' con todoElStock en true. La razón social de la "
+              + "entidad que la pidió se ve con 'consultar_entidades'.")
   public String consultarNecesidades(
       @ToolParam(required = false, description = "Número de la necesidad") String necesidadId,
       @ToolParam(required = false, description = "Número del producto") String productoId) {
@@ -168,7 +178,8 @@ public class ConsultaTools {
               + "producto; para el detalle por producto de todos, consultar cada depósito con su "
               + "depositoId. Con productoId devuelve cuántas unidades hay de ese producto en "
               + "cada depósito y el total. Con todoElStock en true devuelve lo mismo para todos "
-              + "los productos.")
+              + "los productos de una sola vez: es lo que hay que usar para cruzar el stock con "
+              + "las necesidades sin cubrir.")
   public String consultarLogistica(
       @ToolParam(required = false, description = "Id del depósito, por ejemplo DEP-UTN-01")
           String depositoId,
@@ -244,11 +255,49 @@ public class ConsultaTools {
   }
 
   @Tool(
+      name = "consultar_mision_de_donador",
+      description =
+          "La misión que un donador tiene en curso en Incentivos y las insignias que ya ganó. "
+              + "Usar para saber qué le falta para completar su misión: la misión dice qué hay "
+              + "que cumplir y a qué categoría lleva. Si no tiene misión en curso, lo dice. Es "
+              + "lo que le falta a 'consultar_estadisticas_donador', que solo trae el id de la "
+              + "misión. Para saber cuántas donaciones aceptadas lleva, 'consultar_donaciones' "
+              + "con su número y contar las ACEPTADA.")
+  public String consultarMisionDeDonador(
+      @ToolParam(description = "Número del donador") String donadorId) {
+    String id = donadorId.trim();
+    // Las dos consultas son independientes: en serie, con Incentivos dormido, sumarían sus esperas.
+    String[] respuestas =
+        aLaVez(
+            () -> siExiste(() -> api.getIncentivos("/donadores/" + id + "/mision-actual"),
+                "El donador no tiene una misión en curso (Incentivos contestó que no hay)."),
+            () -> siExiste(() -> api.getIncentivos("/donadores/" + id + "/insignias"),
+                "Incentivos no tiene insignias registradas para este donador."));
+    ObjectNode juntas = MAPPER.createObjectNode();
+    juntas.set("mision", comoJson(respuestas[0]));
+    juntas.set("insignias", comoJson(respuestas[1]));
+    return juntas.toString();
+  }
+
+  /**
+   * Un 404 de Incentivos acá es información —no hay misión, no hay insignias—, no una falla. Lo
+   * que no sea un 404 sigue subiendo como error.
+   */
+  private static String siExiste(Supplier<String> consulta, String siNoHay) {
+    try {
+      return consulta.get();
+    } catch (DonaTrackApi.NoEncontrado e) {
+      return MAPPER.getNodeFactory().textNode(siNoHay).toString();
+    }
+  }
+
+  @Tool(
       name = "consultar_insignias_y_misiones",
       description =
           "El catálogo de Incentivos: las insignias que se pueden ganar y las misiones que las "
               + "otorgan. Una misión define qué hay que cumplir, por ejemplo tener 20 donaciones "
-              + "aceptadas.")
+              + "aceptadas. Es el catálogo general, no lo de un donador: lo que tiene en curso uno "
+              + "puntual se ve con 'consultar_mision_de_donador'.")
   public String consultarIncentivos(
       @ToolParam(
               required = false,

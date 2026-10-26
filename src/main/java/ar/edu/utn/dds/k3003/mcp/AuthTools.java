@@ -20,15 +20,24 @@ public class AuthTools {
 
   private final SesionMcp sesion;
   private final DonaTrackApi api;
+
+  /**
+   * La contraseña de admin, o vacía si no se configuró.
+   *
+   * <p>No tiene valor por defecto: este código y su archivo de configuración están en un
+   * repositorio, y una clave escrita ahí la conoce cualquiera que lo abra. Hasta que alguien la
+   * define, el ingreso como admin está deshabilitado. Nunca se escribe en un log ni en una
+   * respuesta.
+   */
   private final String adminPassword;
 
   public AuthTools(
       SesionMcp sesion,
       DonaTrackApi api,
-      @Value("${donatrack.admin-password:admin123}") String adminPassword) {
+      @Value("${donatrack.admin-password:}") String adminPassword) {
     this.sesion = sesion;
     this.api = api;
-    this.adminPassword = adminPassword;
+    this.adminPassword = adminPassword == null ? "" : adminPassword.trim();
   }
 
   @Tool(
@@ -36,7 +45,9 @@ public class AuthTools {
       description =
           "Inicia sesión en DonaTrack. Permite autenticarse como ADMIN (con usuario y contraseña) "
               + "o como DONADOR (indicando el número de ID de donador registrado). Es requisito para "
-              + "operaciones de modificación y para ejecutar la seed de datos.")
+              + "operaciones de modificación y para ejecutar la seed de datos. La contraseña de "
+              + "ADMIN la define quien instaló el servidor; si no está configurada, el ingreso "
+              + "como ADMIN está deshabilitado y la herramienta explica cómo habilitarlo.")
   public String iniciarSesion(
       @ToolParam(description = "Rol a usar: 'ADMIN' o 'DONADOR'") String rol,
       @ToolParam(
@@ -45,15 +56,22 @@ public class AuthTools {
           String identificador,
       @ToolParam(
               required = false,
-              description = "Contraseña requerida solo para ADMIN (por defecto 'admin123')")
+              description = "Contraseña de administrador. Solo para ADMIN; pedírsela al usuario.")
           String password) {
     if (rol == null || rol.isBlank()) {
       return "Debe especificar el rol: 'ADMIN' o 'DONADOR'.";
     }
     String rolNorm = rol.trim().toUpperCase();
     if ("ADMIN".equals(rolNorm)) {
+      if (adminPassword.isEmpty()) {
+        return "El ingreso como ADMIN está deshabilitado: el servidor MCP no tiene configurada "
+            + "una contraseña de administrador. Para habilitarlo hay que definir la variable de "
+            + "entorno DONATRACK_ADMIN_PASSWORD en el bloque \"env\" del servidor donatrack, en "
+            + "claude_desktop_config.json, y reiniciar Claude Desktop (el README tiene el "
+            + "ejemplo). Como DONADOR se puede ingresar igual.";
+      }
       String pass = password != null ? password.trim() : "";
-      if (!adminPassword.equals(pass)) {
+      if (!coincide(adminPassword, pass)) {
         return "Autenticación fallida: contraseña de Administrador incorrecta.";
       }
       String user =
@@ -104,8 +122,16 @@ public class AuthTools {
       description =
           "Informa el estado de la sesión actual: si está autenticado, usuario/rol activo y permisos.")
   public String quienSoy() {
+    return estadoDeSesion() + "\nConexión: " + api.descripcionDeConexion() + ".";
+  }
+
+  private String estadoDeSesion() {
     if (!sesion.estaAutenticado()) {
-      return "Estado de sesión: ANÓNIMO (No autenticado). Para realizar operaciones o cargar datos, usá 'iniciar_sesion'.";
+      return "Estado de sesión: ANÓNIMO (No autenticado). Para realizar operaciones o cargar datos, usá 'iniciar_sesion'."
+          + (adminPassword.isEmpty()
+              ? " El ingreso como ADMIN está deshabilitado: falta configurar la contraseña "
+                  + "(DONATRACK_ADMIN_PASSWORD)."
+              : "");
     }
     if (sesion.esAdmin()) {
       return "Estado de sesión: ADMINISTRADOR ("
@@ -117,5 +143,15 @@ public class AuthTools {
         + ", ID: "
         + sesion.getUsuario()
         + "). Habilitado para consultar historial y donar.";
+  }
+
+  /**
+   * Compara sin cortar en el primer carácter distinto: el tiempo de respuesta no tiene que dejar
+   * adivinar la clave de a una letra.
+   */
+  private static boolean coincide(String esperada, String recibida) {
+    return java.security.MessageDigest.isEqual(
+        esperada.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+        recibida.getBytes(java.nio.charset.StandardCharsets.UTF_8));
   }
 }

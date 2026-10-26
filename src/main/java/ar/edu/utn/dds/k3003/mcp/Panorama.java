@@ -36,6 +36,11 @@ class Panorama {
   List<JsonNode> necesidadesDelProducto = List.of();
   Integer stock;
   JsonNode asignacion;
+
+  /** La necesidad a la que fue la asignación, y la entidad que la pidió. Solo tras una donación. */
+  JsonNode necesidadAsignada;
+
+  JsonNode entidadAsignada;
   JsonNode insignias;
   JsonNode mision;
   JsonNode quejas;
@@ -185,11 +190,6 @@ class Panorama {
    */
   private static final int PACIENCIA_SEGUNDOS = 4;
 
-  /** El worker de Logística suele tardar un par de segundos en procesar una donación. */
-  private static final int INTENTOS_ASIGNACION = 3;
-
-  private static final long ESPERA_ENTRE_INTENTOS_MS = 1500;
-
   private JsonNode leer(String modulo, Supplier<String> consulta) {
     try {
       return MAPPER.readTree(conPaciencia(consulta));
@@ -216,24 +216,56 @@ class Panorama {
   }
 
   /**
-   * Suma a la foto la asignación que Logística le dio a una donación recién hecha.
+   * Suma a la foto la asignación que Logística le dio a una donación recién hecha, y a dónde fue:
+   * la necesidad y la entidad que la pidió.
    *
    * <p>Se consulta el paquete en vez de deducir el destino del stock, porque la deducción falla
    * justo acá: Logística procesa en segundo plano, y si se mira antes de que el worker termine,
-   * que el stock no haya subido no dice nada. Por eso se reintenta un par de veces.
+   * que el stock no haya subido no dice nada. Por eso se espera a que aparezca.
+   *
+   * <p>La espera termina en lo primero que ocurra: la ventana pedida, o {@code hastaMs}, el
+   * instante a partir del cual ya no queda presupuesto de tiempo. Siempre se mira al menos una vez.
+   *
+   * @param ventanaMs cuánto esperar como máximo desde ahora
+   * @param hastaMs instante absoluto (en milisegundos) que no se puede pasar, para no cruzar el
+   *     corte de 60 segundos de Claude
+   * @param intervaloMs cada cuánto volver a mirar
    */
-  Panorama conAsignacionDe(String donacionId) {
-    for (int intento = 0; intento < INTENTOS_ASIGNACION; intento++) {
-      if (intento > 0) {
-        esperar(ESPERA_ENTRE_INTENTOS_MS);
-      }
+  Panorama conAsignacionDe(String donacionId, long ventanaMs, long hastaMs, long intervaloMs) {
+    long limite = Math.min(System.currentTimeMillis() + ventanaMs, hastaMs);
+    while (true) {
       asignacionPendiente = false;
       leerAsignacion("paq-" + donacionId);
       if (asignacion != null || !asignacionPendiente) {
         break;
       }
+      if (System.currentTimeMillis() + intervaloMs >= limite) {
+        break;
+      }
+      esperar(intervaloMs);
+    }
+    if (asignacion != null) {
+      leerDestino();
     }
     return this;
+  }
+
+  /**
+   * De la asignación a quien la pidió: paquete → necesidad → entidad.
+   *
+   * <p>Son dos lecturas encadenadas, porque la entidad sale de la necesidad. Si la primera falla no
+   * se intenta la segunda: no hay de dónde sacar la entidad.
+   */
+  private void leerDestino() {
+    String necesidadId = alguno(asignacion, "necesidadid", "necesidadID");
+    if (necesidadId.isBlank()) {
+      return;
+    }
+    necesidadAsignada = leer("Donadores", () -> api.getDonadores("/necesidades/" + necesidadId));
+    String entidadId = texto(necesidadAsignada, "entidadID");
+    if (!entidadId.isBlank()) {
+      entidadAsignada = leer("Donadores", () -> api.getDonadores("/entidades/" + entidadId));
+    }
   }
 
   /** Sin número no se pregunta: pedir {@code /donaciones/} traería el listado entero. */

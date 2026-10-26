@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
@@ -760,5 +761,347 @@ class ToolsTest {
     consultas.consultarAsignaciones(null, null, null, null);
 
     servidor.verify();
+  }
+
+  // ── Contraseña de admin ────────────────────────────────────────────────────
+
+  private DonaTrackApi apiDirecta() {
+    return new DonaTrackApi(rest, DONACIONES, DONADORES, LOGISTICA, INCENTIVOS);
+  }
+
+  @Test
+  @DisplayName("Sin contraseña configurada, el ingreso como admin está deshabilitado y dice cómo habilitarlo")
+  void adminDeshabilitadoSinContrasena() {
+    sesion.cerrarSesion();
+    AuthTools sinClave = new AuthTools(sesion, apiDirecta(), "");
+
+    // Aunque alguien pruebe con la clave que tenía antes por defecto, no entra.
+    String respuesta = sinClave.iniciarSesion("ADMIN", "admin", "admin123");
+
+    assertTrue(respuesta.contains("deshabilitado"));
+    assertTrue(respuesta.contains("DONATRACK_ADMIN_PASSWORD"), "dice qué variable lo habilita");
+    assertTrue(respuesta.contains("\"env\""), "y en qué parte de la configuración va");
+    assertFalse(sesion.estaAutenticado(), "sin clave configurada no se entra con ninguna");
+  }
+
+  @Test
+  @DisplayName("Una contraseña configurada en blanco cuenta como no configurada")
+  void contrasenaEnBlancoEsNoConfigurada() {
+    sesion.cerrarSesion();
+    AuthTools enBlanco = new AuthTools(sesion, apiDirecta(), "   ");
+
+    assertTrue(enBlanco.iniciarSesion("ADMIN", "admin", "   ").contains("deshabilitado"));
+    assertFalse(sesion.estaAutenticado(), "ni siquiera con la clave en blanco");
+  }
+
+  @Test
+  @DisplayName("Sin contraseña configurada se puede ingresar como donador, y quien_soy lo avisa")
+  void sinClaveElDonadorEntraIgual() {
+    sesion.cerrarSesion();
+    AuthTools sinClave = new AuthTools(sesion, apiDirecta(), "");
+    servidor
+        .expect(requestTo(DONADORES + "/donadores/3"))
+        .andRespond(
+            withSuccess("{\"nombre\":\"Carlos\",\"apellido\":\"Seed\"}", MediaType.APPLICATION_JSON));
+
+    assertTrue(sinClave.iniciarSesion("DONADOR", "3", null).contains("DONADOR"));
+    sesion.cerrarSesion();
+    assertTrue(sinClave.quienSoy().contains("deshabilitado"));
+  }
+
+  @Test
+  @DisplayName("Con contraseña configurada, la correcta entra y una equivocada no, sin repetir ninguna")
+  void contrasenaCorrectaEIncorrecta() {
+    sesion.cerrarSesion();
+    AuthTools conClave = new AuthTools(sesion, apiDirecta(), "clave-del-servidor");
+
+    String mal = conClave.iniciarSesion("ADMIN", "admin", "clave-tipeada-mal");
+
+    assertTrue(mal.contains("incorrecta"));
+    assertFalse(mal.contains("clave-tipeada-mal"), "no repite lo que se tipeó");
+    assertFalse(mal.contains("clave-del-servidor"), "ni deja ver la verdadera");
+    assertFalse(sesion.estaAutenticado());
+
+    String bien = conClave.iniciarSesion("ADMIN", "admin", "clave-del-servidor");
+
+    assertTrue(bien.contains("ADMINISTRADOR"));
+    assertFalse(bien.contains("clave-del-servidor"));
+    assertTrue(sesion.esAdmin());
+  }
+
+  @Test
+  @DisplayName("La contraseña no queda escrita en ningún log, ni al entrar ni al fallar")
+  void contrasenaNoVaALosLogs() {
+    sesion.cerrarSesion();
+    ch.qos.logback.classic.Logger raiz =
+        (ch.qos.logback.classic.Logger)
+            org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> eventos =
+        new ch.qos.logback.core.read.ListAppender<>();
+    eventos.start();
+    raiz.addAppender(eventos);
+    try {
+      AuthTools conClave = new AuthTools(sesion, apiDirecta(), "clave-secreta-123");
+      conClave.iniciarSesion("ADMIN", "admin", "clave-secreta-123");
+      sesion.cerrarSesion();
+      conClave.iniciarSesion("ADMIN", "admin", "otra-clave-456");
+      conClave.quienSoy();
+    } finally {
+      raiz.detachAppender(eventos);
+    }
+
+    String todo =
+        eventos.list.stream().map(e -> e.getFormattedMessage()).reduce("", String::concat);
+    assertFalse(todo.contains("clave-secreta-123"), "la configurada");
+    assertFalse(todo.contains("otra-clave-456"), "la que se tipeó mal");
+  }
+
+  @Test
+  @DisplayName("Ni la herramienta ni la configuración traen una contraseña por defecto")
+  void sinContrasenaPorDefecto() throws Exception {
+    java.lang.reflect.Method iniciar =
+        AuthTools.class.getMethod("iniciarSesion", String.class, String.class, String.class);
+    org.springframework.ai.tool.annotation.Tool tool =
+        iniciar.getAnnotation(org.springframework.ai.tool.annotation.Tool.class);
+    String descripcionDelParametro =
+        iniciar.getParameters()[2]
+            .getAnnotation(org.springframework.ai.tool.annotation.ToolParam.class)
+            .description();
+
+    assertFalse(tool.description().contains("admin123"), "la descripción de la tool");
+    assertFalse(descripcionDelParametro.contains("admin123"), "la del parámetro");
+
+    String propiedades;
+    try (var in = getClass().getResourceAsStream("/application.properties")) {
+      propiedades = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+    assertFalse(propiedades.contains("admin123"), "el archivo se sube al repositorio");
+    assertTrue(propiedades.contains("donatrack.admin-password=${DONATRACK_ADMIN_PASSWORD:}"));
+  }
+
+  @Test
+  @DisplayName("quien_soy dice por dónde van los pedidos: gateway o directo")
+  void quienSoyDiceLaConexion() {
+    String directo = auth.quienSoy();
+    DonaTrackApi conGateway =
+        new DonaTrackApi(
+            rest,
+            DONACIONES,
+            DONADORES,
+            LOGISTICA,
+            INCENTIVOS,
+            "https://gw.onrender.com",
+            "/donaciones",
+            "/donadores",
+            "/logistica",
+            "/incentivos",
+            "/consultas");
+    String porGateway = new AuthTools(sesion, conGateway, "admin123").quienSoy();
+
+    assertTrue(directo.contains("sin gateway"));
+    assertTrue(porGateway.contains("gateway https://gw.onrender.com"));
+    assertTrue(porGateway.contains("ADMINISTRADOR"), "sigue diciendo la sesión");
+  }
+
+  // ── Estado de donaciones e Incentivos ──────────────────────────────────────
+
+  @Test
+  @DisplayName("Cambiar el estado de una donación manda el estado solo, como JSON")
+  void cambiarEstadoDonacion() {
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones/12/estado"))
+        .andExpect(method(HttpMethod.PATCH))
+        // Donaciones espera "ACEPTADA" con comillas y como JSON: sin las comillas lo rechaza.
+        .andExpect(header("Content-Type", org.hamcrest.Matchers.containsString("application/json")))
+        .andExpect(content().string("\"ACEPTADA\""))
+        .andRespond(
+            withSuccess("{\"id\":\"12\",\"estado\":\"ACEPTADA\"}", MediaType.APPLICATION_JSON));
+
+    String respuesta = operaciones.cambiarEstadoDonacion(" 12 ", " aceptada ");
+
+    servidor.verify();
+    assertTrue(respuesta.contains("ACEPTADA"));
+  }
+
+  @Test
+  @DisplayName("El estado inválido lo rechaza Donaciones y el motivo llega al usuario")
+  void estadoInvalidoLoRechazaElModulo() {
+    servidor
+        .expect(requestTo(DONACIONES + "/donaciones/12/estado"))
+        .andRespond(
+            withStatus(HttpStatus.BAD_REQUEST)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"error\":\"Estado inválido\"}"));
+
+    RuntimeException e =
+        assertThrows(
+            RuntimeException.class, () -> operaciones.cambiarEstadoDonacion("12", "VOLANDO"));
+
+    assertTrue(e.getMessage().contains("Estado inválido"));
+  }
+
+  @Test
+  @DisplayName("Crear una insignia manda id, nombre y descripción")
+  void crearInsignia() {
+    servidor
+        .expect(requestTo(INCENTIVOS + "/insignias"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    "{\"id\":\"ins-solidario\",\"nombre\":\"Solidario\","
+                        + "\"descripcion\":\"20 donaciones aceptadas\"}",
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.crearInsignia(" ins-solidario ", "Solidario", "20 donaciones aceptadas");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Crear una misión manda los seis datos con las categorías y el tipo en mayúsculas")
+  void crearMision() {
+    servidor
+        .expect(requestTo(INCENTIVOS + "/misiones"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"id":"mis-1","nombre":"Mision Solidaria","insigniaID":"ins-solidario",
+                     "categoriaInicio":"OCASIONAL","categoriaFin":"COLABORADOR","tipo":"COMPLETITUD"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.crearMision(
+        "mis-1", "Mision Solidaria", "ins-solidario", "ocasional", "colaborador", "completitud");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Asignar una misión la busca en Incentivos y manda la misión entera, sin campos de más")
+  void asignarMision() {
+    servidor
+        .expect(requestTo(INCENTIVOS + "/misiones"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(
+            withSuccess(
+                """
+                [{"id":"mis-0","nombre":"Otra","insigniaID":"ins-0","categoriaInicio":"OCASIONAL",
+                  "categoriaFin":"COLABORADOR","tipo":"COMPLETITUD"},
+                 {"id":"mis-1","nombre":"Mision Solidaria","insigniaID":"ins-1",
+                  "categoriaInicio":"OCASIONAL","categoriaFin":"COLABORADOR","tipo":"COMPLETITUD",
+                  "campoQueElPostNoConoce":"x"}]""",
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/mision-actual"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    """
+                    {"id":"mis-1","nombre":"Mision Solidaria","insigniaID":"ins-1",
+                     "categoriaInicio":"OCASIONAL","categoriaFin":"COLABORADOR","tipo":"COMPLETITUD"}
+                    """,
+                    JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    operaciones.asignarMisionADonador("3", " mis-1 ");
+
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("Si la misión no existe en Incentivos, se dice cuáles hay y no se manda nada")
+  void asignarMisionInexistente() {
+    servidor
+        .expect(requestTo(INCENTIVOS + "/misiones"))
+        .andRespond(
+            withSuccess("[{\"id\":\"mis-0\"},{\"id\":\"mis-9\"}]", MediaType.APPLICATION_JSON));
+
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class, () -> operaciones.asignarMisionADonador("3", "mis-1"));
+
+    // Si hubiera intentado asignarla igual, el servidor simulado habría fallado por pedido inesperado.
+    servidor.verify();
+    assertTrue(e.getMessage().contains("mis-0, mis-9"), "lista las que sí hay");
+    assertTrue(e.getMessage().contains("crear_mision"), "y cómo se crea una");
+  }
+
+  @Test
+  @DisplayName("Las altas y cambios nuevos de Donaciones e Incentivos exigen sesión de admin")
+  void nuevasOperacionesExigenAdmin() {
+    sesion.iniciarComoDonador("1", "Carlos");
+
+    assertThrows(
+        IllegalStateException.class, () -> operaciones.cambiarEstadoDonacion("12", "ACEPTADA"));
+    assertThrows(IllegalStateException.class, () -> operaciones.crearInsignia("i", "n", "d"));
+    assertThrows(
+        IllegalStateException.class,
+        () -> operaciones.crearMision("m", "n", "i", "OCASIONAL", "COLABORADOR", "COMPLETITUD"));
+    assertThrows(
+        IllegalStateException.class, () -> operaciones.asignarMisionADonador("3", "mis-1"));
+
+    // Ninguna llegó a ningún módulo.
+    servidor.verify();
+  }
+
+  @Test
+  @DisplayName("La misión de un donador se pide a Incentivos junto con sus insignias")
+  void misionDeDonador() throws Exception {
+    // Las dos consultas salen a la vez, así que el orden en que llegan no está garantizado.
+    servidor = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/mision-actual"))
+        .andRespond(
+            withSuccess(
+                "{\"id\":\"mis-1\",\"nombre\":\"Mision Solidaria\"}", MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/insignias"))
+        .andRespond(withSuccess("[{\"id\":\"ins-1\"}]", MediaType.APPLICATION_JSON));
+
+    var respuesta = new ObjectMapper().readTree(consultas.consultarMisionDeDonador(" 3 "));
+
+    servidor.verify();
+    assertEquals("mis-1", respuesta.path("mision").path("id").asText());
+    assertEquals("ins-1", respuesta.path("insignias").get(0).path("id").asText());
+  }
+
+  @Test
+  @DisplayName("Un donador sin misión en curso no es un error: se dice que no tiene")
+  void donadorSinMision() throws Exception {
+    servidor = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/mision-actual"))
+        .andRespond(withStatus(HttpStatus.NOT_FOUND).body("sin misión"));
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/insignias"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
+    var respuesta = new ObjectMapper().readTree(consultas.consultarMisionDeDonador("3"));
+
+    assertTrue(respuesta.path("mision").asText().contains("no tiene una misión en curso"));
+    assertEquals(0, respuesta.path("insignias").size());
+  }
+
+  @Test
+  @DisplayName("Si Incentivos falla de verdad al pedir la misión, el error sube y no se disfraza de «sin misión»")
+  void errorRealDeIncentivos() {
+    servidor = MockRestServiceServer.bindTo(rest).ignoreExpectOrder(true).build();
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/mision-actual"))
+        .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR).body("boom"));
+    servidor
+        .expect(requestTo(INCENTIVOS + "/donadores/3/insignias"))
+        .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+
+    RuntimeException e =
+        assertThrows(RuntimeException.class, () -> consultas.consultarMisionDeDonador("3"));
+
+    assertTrue(e.getMessage().contains("error interno"));
   }
 }

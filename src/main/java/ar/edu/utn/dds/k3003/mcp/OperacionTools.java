@@ -31,6 +31,30 @@ public class OperacionTools {
    */
   private final boolean narrar;
 
+  /**
+   * Cuánto se le espera al worker de Logística después de donar, y cada cuánto se lo mira.
+   *
+   * <p>Logística asigna la donación en segundo plano y suele tardar un par de segundos. Se espera
+   * hasta 20, siempre que quede presupuesto de tiempo: pasado eso, es más útil decir «todavía no»
+   * que hacer esperar a quien está mirando la pantalla.
+   */
+  private static final long VENTANA_WORKER_MS = 20_000;
+
+  private static final long INTERVALO_WORKER_MS = 1_500;
+
+  /**
+   * Lo que puede tardar la herramienta entera, medido desde que arranca, con margen respecto del
+   * corte de 60 segundos de Claude. Con un módulo dormido el pedido de donar solo puede llevar 35:
+   * lo que sobra es lo que hay para esperar al worker.
+   */
+  private static final long PRESUPUESTO_MS = 50_000;
+
+  /** Lo que hace falta guardar para leer la necesidad y su entidad: dos consultas de 4 segundos. */
+  private static final long RESERVA_PARA_EL_DESTINO_MS = 8_000;
+
+  private final long ventanaWorkerMs;
+  private final long intervaloWorkerMs;
+
   @org.springframework.beans.factory.annotation.Autowired
   public OperacionTools(
       DonaTrackApi api,
@@ -41,10 +65,23 @@ public class OperacionTools {
 
   public OperacionTools(
       DonaTrackApi api, String depositoPorDefecto, SesionMcp sesion, boolean narrar) {
+    this(api, depositoPorDefecto, sesion, narrar, VENTANA_WORKER_MS, INTERVALO_WORKER_MS);
+  }
+
+  /** Para los tests: con la espera real, cada donación sin asignar tardaría 20 segundos. */
+  OperacionTools(
+      DonaTrackApi api,
+      String depositoPorDefecto,
+      SesionMcp sesion,
+      boolean narrar,
+      long ventanaWorkerMs,
+      long intervaloWorkerMs) {
     this.api = api;
     this.depositoPorDefecto = depositoPorDefecto;
     this.sesion = sesion;
     this.narrar = narrar;
+    this.ventanaWorkerMs = ventanaWorkerMs;
+    this.intervaloWorkerMs = intervaloWorkerMs;
   }
 
   public OperacionTools(DonaTrackApi api, String depositoPorDefecto) {
@@ -123,27 +160,44 @@ public class OperacionTools {
           "Registra una donación. Es la operación central del sistema: valida el producto, "
               + "consulta a Donadores si esa persona puede donar, y avisa a Logística para que la "
               + "asigne a una necesidad. Hace falta saber el número del donador y el del "
-              + "producto: si no se tienen, consultarlos primero. Devuelve un resumen del efecto "
-              + "en cada módulo, ya redactado: mostrarlo tal cual, sin resumirlo.")
+              + "producto: si no se tienen, consultarlos primero ('consultar_donadores' y "
+              + "'consultar_productos'; el producto se busca por nombre en el catálogo). Devuelve "
+              + "un resumen del efecto en cada módulo, ya redactado: mostrarlo tal cual, sin "
+              + "resumirlo. Dice a qué necesidad y a qué entidad se asignó la donación "
+              + "(paquete → necesidad → entidad con su razón social): Logística la asigna en "
+              + "segundo plano y la herramienta la espera unos segundos. Si todavía no la asignó "
+              + "lo dice, y se vuelve a mirar con 'consultar_asignaciones' (donacionId): no "
+              + "inventar el destino.")
   public String registrarDonacion(
       @ToolParam(description = "Número del donador que dona") String donadorId,
       @ToolParam(description = "Número del producto que se dona") String productoId,
       @ToolParam(description = "Cuántas unidades. Tiene que ser mayor a cero.") int cantidad,
       @ToolParam(description = "Descripción de la donación en pocas palabras") String descripcion,
-      @ToolParam(required = false, description = "Depósito. Si se omite se usa el habitual.")
+      @ToolParam(
+              required = false,
+              description =
+                  "Id del depósito, con el formato DEP-UTN-01. Si el usuario dice «depósito 3», "
+                      + "consultar los depósitos con 'consultar_depositos_y_stock' para ver cuál "
+                      + "es su id. Si se omite se usa el habitual.")
           String depositoId) {
     sesion.requerirLogin("registrar una donación");
+    long inicio = System.currentTimeMillis();
     String dId = (donadorId != null && !donadorId.isBlank()) ? donadorId.trim() : sesion.getUsuario();
     String deposito =
         (depositoId == null || depositoId.isBlank()) ? depositoPorDefecto : depositoId.trim();
     String producto = productoId.trim();
     return conRelato(
         () -> Panorama.deDonacion(api, producto),
-        // Después, además de lo mismo que antes, se busca el paquete que armó Logística: es la
-        // única forma de saber con certeza a qué necesidad fue la donación.
+        // Después, además de lo mismo que antes, se busca el paquete que armó Logística y de ahí
+        // la necesidad y la entidad: es la única forma de saber con certeza a dónde fue la
+        // donación. Se espera al worker mientras quede presupuesto de tiempo.
         creada ->
             Panorama.deDonacion(api, producto)
-                .conAsignacionDe(Panorama.texto(creada, "id")),
+                .conAsignacionDe(
+                    Panorama.texto(creada, "id"),
+                    ventanaWorkerMs,
+                    inicio + PRESUPUESTO_MS - RESERVA_PARA_EL_DESTINO_MS,
+                    intervaloWorkerMs),
         () ->
             api.postDonaciones(
                 "/donaciones",
@@ -462,6 +516,139 @@ public class OperacionTools {
   /** El camino inverso, solo para el relato. Vacío si el paquete no sigue la convención. */
   private static String donacionDe(String paquete) {
     return paquete.startsWith("paq-") ? paquete.substring("paq-".length()) : "";
+  }
+
+  // ── Estado de donaciones e Incentivos ──────────────────────────────────────
+
+  @Tool(
+      name = "cambiar_estado_donacion",
+      description =
+          "Cambia a mano el estado de una donación: INGRESADA, ACEPTADA o CONQUEJA. Requiere "
+              + "ADMIN. Normalmente lo manejan los otros módulos: Logística la deja ACEPTADA al "
+              + "reportar la entrega, y Donaciones la deja CONQUEJA al registrar una queja. Sirve "
+              + "para preparar una demostración, por ejemplo dejar ACEPTADA una donación para "
+              + "poder quejarse de ella sin pasar por el ciclo de entrega. Cambia solo el estado "
+              + "de la donación: no avisa a Logística ni modifica ninguna necesidad. Devuelve la "
+              + "donación con su estado nuevo.")
+  public String cambiarEstadoDonacion(
+      @ToolParam(description = "Número de la donación, por ejemplo 12") String donacionId,
+      @ToolParam(description = "INGRESADA, ACEPTADA o CONQUEJA") String estado) {
+    sesion.requerirAdmin("cambiar el estado de una donación");
+    // Donaciones espera el estado solo, como un string JSON ("ACEPTADA"), no un objeto. Pasar el
+    // String a secas lo mandaría como texto plano, sin comillas, y el módulo lo rechazaría.
+    return api.patchDonaciones(
+        "/donaciones/" + donacionId.trim() + "/estado",
+        com.fasterxml.jackson.databind.node.TextNode.valueOf(estado.trim().toUpperCase()));
+  }
+
+  @Tool(
+      name = "crear_insignia",
+      description =
+          "Da de alta una insignia en Incentivos: el logro que se le otorga a un donador cuando "
+              + "completa una misión. Requiere ADMIN. El id lo elige quien la crea; por "
+              + "costumbre empieza con ins-, por ejemplo ins-solidario. Hace falta antes de "
+              + "'crear_mision', que apunta a una insignia existente.")
+  public String crearInsignia(
+      @ToolParam(description = "Id de la insignia, por ejemplo ins-solidario") String id,
+      @ToolParam(description = "Nombre, por ejemplo Solidario") String nombre,
+      @ToolParam(description = "Qué se reconoce, por ejemplo 20 donaciones aceptadas")
+          String descripcion) {
+    sesion.requerirAdmin("crear una insignia");
+    return api.postIncentivos(
+        "/insignias",
+        DonaTrackApi.cuerpo("id", id.trim(), "nombre", nombre, "descripcion", descripcion));
+  }
+
+  @Tool(
+      name = "crear_mision",
+      description =
+          "Da de alta una misión en Incentivos: lo que tiene que cumplir un donador para ganar "
+              + "una insignia y pasar de una categoría a la siguiente. Requiere ADMIN. La "
+              + "insignia tiene que existir ('crear_insignia'). Las categorías, de menor a mayor, "
+              + "son OCASIONAL, COLABORADOR, TRANSFORMADOR, SALVADOR y REVOLUCIONARIO. Los tipos "
+              + "que usan el bot y las demostraciones son COMPLETITUD y DONACIONES_EXITOSAS; "
+              + "Incentivos no publica una lista oficial, así que lo que no acepte lo rechaza él "
+              + "con su motivo. Para que un donador la tenga en curso, 'asignar_mision_a_donador'.")
+  public String crearMision(
+      @ToolParam(description = "Id de la misión, por ejemplo mis-solidaria") String id,
+      @ToolParam(description = "Nombre, por ejemplo Mision Solidaria") String nombre,
+      @ToolParam(description = "Id de la insignia que otorga, por ejemplo ins-solidario")
+          String insigniaId,
+      @ToolParam(description = "Categoría de la que parte el donador, por ejemplo OCASIONAL")
+          String categoriaInicio,
+      @ToolParam(description = "Categoría a la que llega al cumplirla, por ejemplo COLABORADOR")
+          String categoriaFin,
+      @ToolParam(description = "COMPLETITUD o DONACIONES_EXITOSAS") String tipo) {
+    sesion.requerirAdmin("crear una misión");
+    return api.postIncentivos(
+        "/misiones",
+        DonaTrackApi.cuerpo(
+            "id", id.trim(),
+            "nombre", nombre,
+            "insigniaID", insigniaId.trim(),
+            "categoriaInicio", categoriaInicio.trim().toUpperCase(),
+            "categoriaFin", categoriaFin.trim().toUpperCase(),
+            "tipo", tipo.trim().toUpperCase()));
+  }
+
+  @Tool(
+      name = "asignar_mision_a_donador",
+      description =
+          "Le deja a un donador una misión en curso en Incentivos. Requiere ADMIN. La misión tiene "
+              + "que existir: se ve con 'consultar_insignias_y_misiones' y se crea con "
+              + "'crear_mision'. Después, 'procesar_donador_en_incentivos' evalúa si la cumplió. "
+              + "Alcanza con el id de la misión: los demás datos se completan con los que tiene "
+              + "Incentivos.")
+  public String asignarMisionADonador(
+      @ToolParam(description = "Número del donador") String donadorId,
+      @ToolParam(description = "Id de la misión, por ejemplo mis-solidaria") String misionId) {
+    sesion.requerirAdmin("asignar una misión a un donador");
+    String mision = misionId.trim();
+
+    // Incentivos pide la misión entera en el cuerpo, no solo su id. Para no obligar a repetir seis
+    // datos que ya tiene, se la busca en su listado. Es armar la llamada, no validar nada: si no
+    // está, no hay con qué armarla.
+    com.fasterxml.jackson.databind.JsonNode misiones =
+        parsear(leerConPaciencia(() -> api.getIncentivos("/misiones")));
+    com.fasterxml.jackson.databind.JsonNode elegida = null;
+    java.util.List<String> existentes = new java.util.ArrayList<>();
+    if (misiones != null && misiones.isArray()) {
+      for (com.fasterxml.jackson.databind.JsonNode m : misiones) {
+        String id = primero(m, "id");
+        existentes.add(id);
+        if (mision.equals(id)) {
+          elegida = m;
+        }
+      }
+    }
+    if (elegida == null) {
+      throw new IllegalArgumentException(
+          "Incentivos no tiene ninguna misión con id «"
+              + mision
+              + "». Las que hay: "
+              + (existentes.isEmpty() ? "ninguna" : String.join(", ", existentes))
+              + ". Se crea con 'crear_mision'.");
+    }
+    return api.postIncentivos(
+        "/donadores/" + donadorId.trim() + "/mision-actual",
+        DonaTrackApi.cuerpo(
+            "id", primero(elegida, "id"),
+            "nombre", primero(elegida, "nombre"),
+            "insigniaID", primero(elegida, "insigniaID", "insigniaId", "insigniaid"),
+            "categoriaInicio", primero(elegida, "categoriaInicio"),
+            "categoriaFin", primero(elegida, "categoriaFin"),
+            "tipo", primero(elegida, "tipo")));
+  }
+
+  /** El primero de los nombres que exista: no se asume cómo escribe Incentivos sus campos. */
+  private static String primero(com.fasterxml.jackson.databind.JsonNode nodo, String... campos) {
+    for (String campo : campos) {
+      String valor = campo(nodo, campo);
+      if (valor != null && !valor.isBlank()) {
+        return valor;
+      }
+    }
+    return null;
   }
 
   // ── Depósitos de Logística ─────────────────────────────────────────────────
