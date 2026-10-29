@@ -255,7 +255,7 @@ Se pasan como variables de entorno, normalmente por el bloque `"env"` del servid
 | Variable | Default |
 |---|---|
 | `DONACIONES_URL` | `https://donatrack-donaciones.onrender.com` |
-| `DONADORES_URL` | `https://donadoresyentidadesv2.onrender.com` |
+| `DONADORES_URL` | `https://donadoresyentidadesv2-msg7.onrender.com` |
 | `LOGISTICA_URL` | `https://logistica-i4rf.onrender.com` |
 | `INCENTIVOS_URL` | `https://incentivos-wtbd.onrender.com` |
 | `DEPOSITO_DEFAULT` | `DEP-UTN-01` |
