@@ -23,11 +23,17 @@ Genera `target/donatrack-mcp-1.0-SNAPSHOT.jar`.
 
 ## Conectarlo a Claude Desktop
 
-Copiar el contenido de `claude_desktop_config.json` a:
+Copiar el contenido de `claude_desktop_config.json` al archivo de configuración de Claude
+Desktop. **La forma segura de abrir el archivo correcto es desde la aplicación: Settings →
+Developer → Edit Config.** La ruta depende de cómo se instaló:
 
-```
-%APPDATA%\Claude\claude_desktop_config.json
-```
+| Instalación | Archivo que lee Claude Desktop |
+|---|---|
+| Instalador de claude.ai | `%APPDATA%\Claude\claude_desktop_config.json` |
+| **Microsoft Store** | `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\claude_desktop_config.json` |
+
+Con la versión de la Microsoft Store puede existir igual un archivo en `%APPDATA%\Claude\`, pero
+**no lo lee**: editarlo no cambia nada y no da ningún error, por eso cuesta encontrarlo.
 
 Si el archivo ya existe con otros servidores, agregar solo la entrada `donatrack` dentro de
 `mcpServers`. Después **reiniciar Claude Desktop** por completo, no alcanza con cerrar la
@@ -36,46 +42,66 @@ ventana.
 Cuando conecta, aparece el ícono de herramientas en el campo de texto y se pueden ver las 51
 tools disponibles.
 
-### Contraseña de administrador
+### Ingreso como administrador: modo admin local
 
-Las operaciones que modifican datos piden iniciar sesión como ADMIN (`iniciar_sesion`). La
-contraseña **no tiene valor por defecto**: este repositorio es público y una clave escrita acá la
-conocería cualquiera. Hasta que se define, el ingreso como ADMIN está deshabilitado y la
-herramienta lo dice (como DONADOR se puede entrar igual).
-
-Se pasa por el bloque `"env"` del servidor, en el mismo `claude_desktop_config.json`:
+Las operaciones que modifican datos y la seed piden iniciar sesión como ADMIN (`iniciar_sesion`).
+La identidad de admin la da la **configuración local del equipo**, con `DONATRACK_ADMIN_LOCAL`:
 
 ```json
 {
   "mcpServers": {
     "donatrack": {
       "command": "java",
-      "args": ["-jar", "C:\\ruta\\al\\donatrack-mcp-1.0-SNAPSHOT.jar"],
+      "args": ["-jar", "C:\\ruta\\al\\donatrack-mcp.jar"],
       "env": {
-        "DONATRACK_ADMIN_PASSWORD": "elegir-una-clave-propia"
+        "DONATRACK_GATEWAY_URL": "https://<el-gateway>.onrender.com",
+        "DONATRACK_ADMIN_LOCAL": "true"
       }
     }
   }
 }
 ```
 
-Reemplazar el valor por una clave propia (no copiar el ejemplo tal cual) y **reiniciar Claude
-Desktop del todo**. Ese archivo vive en la máquina de quien lo usa y no se sube al repositorio:
-no pegarle ahí una clave real al `claude_desktop_config.json` de ejemplo que está acá.
+Esa es la **configuración recomendada para el equipo del administrador**: solo
+`DONATRACK_GATEWAY_URL` y `DONATRACK_ADMIN_LOCAL`. Con `DONATRACK_ADMIN_LOCAL=true`,
+`iniciar_sesion` con rol ADMIN entra **sin contraseña**, y `DONATRACK_ADMIN_PASSWORD` **no se usa**:
+se puede borrar de la configuración. Si el modelo igual manda una contraseña, se ignora (no se
+compara, no se loguea, no se repite).
 
-La contraseña no se escribe en ningún log del servidor ni aparece en ninguna respuesta. La
-escribe quien la tipea en la conversación, así que Claude Desktop puede guardarla en sus propios
-registros: conviene una clave que no se use para nada más.
+Por qué: el MCP corre local, con la cuenta del usuario, así que quien puede tipear en ese Claude
+Desktop también puede leer su configuración, y la contraseña por chat no protegía nada. Así,
+además, el modelo nunca ve una credencial y un prompt inyectado no tiene qué sacarle.
+
+En la práctica la contraseña por chat tampoco andaba: Claude se niega a escribir contraseñas para
+autenticarse, aunque el usuario se la pase.
+
+`quien_soy` dice si el modo admin local está activo. Viene **apagado por defecto**: solo `true`
+lo prende (sin importar mayúsculas); cualquier otro valor lo deja apagado, sin impedir que el
+servidor arranque.
+
+### Contraseña de administrador (alternativa sin modo admin local)
+
+Con `DONATRACK_ADMIN_LOCAL` apagado, el ingreso de admin funciona como antes: compara contra
+`DONATRACK_ADMIN_PASSWORD`, que se pasa por el mismo bloque `"env"`. La contraseña **no tiene
+valor por defecto**: este repositorio es público y una clave escrita acá la conocería cualquiera.
+Sin modo admin local y sin contraseña, el ingreso como ADMIN está deshabilitado y la herramienta
+dice cómo habilitarlo (como DONADOR se puede entrar igual). Si se llama sin contraseña, la
+respuesta aclara que la contraseña no se escribe en el chat y explica cómo activar el modo admin
+local.
+
+Ese archivo vive en la máquina de quien lo usa y no se sube al repositorio: no pegarle una clave
+real al `claude_desktop_config.json` de ejemplo que está acá. La contraseña no se escribe en
+ningún log del servidor ni aparece en ninguna respuesta.
 
 ### Usar el gateway
 
-Desde la Entrega 6 el MCP consume el sistema **a través del API Gateway**. Se activa con una
-variable en el mismo bloque `"env"`:
+Desde la Entrega 6 el MCP consume el sistema **a través del API Gateway**. Se activa con
+`DONATRACK_GATEWAY_URL` en el mismo bloque `"env"` (ver el ejemplo de arriba):
 
 ```json
 "env": {
   "DONATRACK_GATEWAY_URL": "https://<el-gateway>.onrender.com",
-  "DONATRACK_ADMIN_PASSWORD": "elegir-una-clave-propia"
+  "DONATRACK_ADMIN_LOCAL": "true"
 }
 ```
 
@@ -265,7 +291,8 @@ Se pasan como variables de entorno, normalmente por el bloque `"env"` del servid
 | `DONATRACK_PREFIJO_LOGISTICA` | `/logistica` |
 | `DONATRACK_PREFIJO_INCENTIVOS` | `/incentivos` |
 | `DONATRACK_PREFIJO_CONSULTAS` | `/consultas` |
-| `DONATRACK_ADMIN_PASSWORD` | **sin valor por defecto**: vacía, el ingreso como ADMIN está deshabilitado |
+| `DONATRACK_ADMIN_LOCAL` | `false`. Con `true`, el ADMIN entra sin contraseña y la de abajo no se usa (recomendado) |
+| `DONATRACK_ADMIN_PASSWORD` | **sin valor por defecto**: solo cuenta sin modo admin local; vacía y sin ese modo, el ingreso como ADMIN está deshabilitado |
 
 Los prefijos solo se usan si hay gateway, y se pueden escribir con o sin barra. Si
 `DONATRACK_GATEWAY_URL` tiene valor, las cuatro URLs directas de arriba se ignoran.
@@ -288,8 +315,13 @@ reintentar, que es lo que suele resolverlo.
 
 Si Claude Desktop no lo detecta:
 
-1. Revisar `donatrack-mcp.log` en la carpeta desde donde arranca.
-2. Probar el jar a mano: `java -jar target/donatrack-mcp-1.0-SNAPSHOT.jar`. Tiene que quedar
+1. Revisar el log que Claude Desktop lleva del servidor: `%LOCALAPPDATA%\Claude\logs\mcp-server-donatrack.log`
+   (arranque, errores y el ida y vuelta con el servidor). El log propio del servidor,
+   `donatrack-mcp.log`, queda en la carpeta desde donde arranca.
+2. Confirmar que se editó el archivo de configuración que Claude Desktop lee de verdad: abrirlo
+   con Settings → Developer → Edit Config (con la versión de la Microsoft Store no es el de
+   `%APPDATA%`).
+3. Probar el jar a mano: `java -jar target/donatrack-mcp-1.0-SNAPSHOT.jar`. Tiene que quedar
    esperando sin imprimir nada en pantalla; si imprime algo, eso está rompiendo el protocolo.
-3. Verificar que la ruta del jar en la configuración sea absoluta y con las barras escapadas.
-4. Reiniciar Claude Desktop del todo.
+4. Verificar que la ruta del jar en la configuración sea absoluta y con las barras escapadas.
+5. Reiniciar Claude Desktop del todo.

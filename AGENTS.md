@@ -63,10 +63,31 @@ sus paths sin enterarse: no poner el prefijo en ninguna. Con gateway hay dos arr
 encadenados, así que `despertar_servicios` despierta primero el gateway y después los módulos a
 través de él; los dos plazos suman 40 segundos, por debajo del corte de 60.
 
+**El ADMIN entra por configuración local, no por contraseña** (`DONATRACK_ADMIN_LOCAL=true`,
+propiedad `donatrack.admin-local`, apagada por defecto). Con el modo prendido, `iniciar_sesion`
+con rol ADMIN entra sin contraseña y `DONATRACK_ADMIN_PASSWORD` **no se usa** (se puede borrar
+de la configuración); si el modelo igual manda una, se ignora: no se compara, no se loguea, no se
+repite. La configuración recomendada para el equipo del administrador es solo
+`DONATRACK_GATEWAY_URL` y `DONATRACK_ADMIN_LOCAL=true`. Por qué: el MCP corre local con la cuenta
+del usuario, así que quien puede tipear en ese Claude Desktop también puede leer la configuración
+(la contraseña por chat no protegía nada), y así el modelo nunca ve una credencial. Además, Claude
+se niega a escribir contraseñas para autenticarse: por el chat el ingreso no funcionaba. La
+descripción de la tool le dice al modelo que llame sin contraseña y que **nunca** se la pida al
+usuario; `quien_soy` informa si el modo está activo. Solo `true` lo prende: se lee como texto para
+que un valor mal escrito lo deje apagado en vez de impedir que Spring arranque.
+
 **La contraseña de admin no tiene valor por defecto** (`DONATRACK_ADMIN_PASSWORD`): este
-repositorio es público. Vacía, el ingreso de admin queda deshabilitado y la tool dice cómo
-habilitarlo. No agregarle un default, ni escribirla en un log o en una respuesta: hay tests que
-lo vigilan.
+repositorio es público. Sin modo admin local, vale lo de antes: vacía, el ingreso de admin queda
+deshabilitado y la tool dice cómo habilitarlo; llamada sin contraseña, la respuesta aclara que no
+se escribe en el chat y cómo prender el modo local. No agregarle un default, ni escribirla en un
+log o en una respuesta: hay tests que lo vigilan.
+
+**Dónde está la configuración de Claude Desktop.** Instalado desde la **Microsoft Store**, lee
+`%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\claude_desktop_config.json`, **no**
+`%APPDATA%\Claude\claude_desktop_config.json` (ese puede existir igual y editarlo no hace nada,
+sin dar error). La forma segura de abrir el archivo correcto es Settings → Developer → Edit
+Config. El log que Claude Desktop lleva del MCP queda en
+`%LOCALAPPDATA%\Claude\logs\mcp-server-donatrack.log`.
 
 **Dormido no es suspendido.** Un servicio dormido de Render despierta con el primer pedido. Uno
 suspendido por su dueño contesta 503 con el header `x-render-routing: suspend-by-user` y no
@@ -112,4 +133,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-155 tests, 0 fallos.
+162 tests, 0 fallos.

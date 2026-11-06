@@ -903,6 +903,139 @@ class ToolsTest {
     assertTrue(porGateway.contains("ADMINISTRADOR"), "sigue diciendo la sesión");
   }
 
+  // ── Modo admin local ───────────────────────────────────────────────────────
+
+  @Test
+  @DisplayName("En modo admin local, el ADMIN entra sin contraseña")
+  void adminLocalEntraSinContrasena() {
+    sesion.cerrarSesion();
+    // Sin contraseña configurada a propósito: en modo admin local no hace falta ninguna.
+    AuthTools local = new AuthTools(sesion, apiDirecta(), "", "true");
+
+    String respuesta = local.iniciarSesion("ADMIN", null, null);
+
+    assertTrue(respuesta.contains("ADMINISTRADOR"));
+    assertTrue(respuesta.contains("modo admin local"), "dice por qué entró sin contraseña");
+    assertTrue(sesion.esAdmin());
+    assertEquals("admin", sesion.getUsuario());
+  }
+
+  @Test
+  @DisplayName("En modo admin local, la contraseña que mande el modelo se ignora: no se compara, no se repite ni se loguea")
+  void adminLocalIgnoraLaContrasena() {
+    sesion.cerrarSesion();
+    ch.qos.logback.classic.Logger raiz =
+        (ch.qos.logback.classic.Logger)
+            org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> eventos =
+        new ch.qos.logback.core.read.ListAppender<>();
+    eventos.start();
+    raiz.addAppender(eventos);
+    String respuesta;
+    String quienSoy;
+    try {
+      // Con una contraseña configurada distinta: si se comparara, no entraría.
+      AuthTools local = new AuthTools(sesion, apiDirecta(), "clave-del-servidor", "true");
+      respuesta = local.iniciarSesion("ADMIN", "admin", "cualquier-cosa-789");
+      quienSoy = local.quienSoy();
+    } finally {
+      raiz.detachAppender(eventos);
+    }
+
+    assertTrue(respuesta.contains("ADMINISTRADOR"));
+    assertTrue(sesion.esAdmin(), "entra aunque la contraseña no coincida: no se mira");
+    assertFalse(respuesta.contains("cualquier-cosa-789"), "no repite la que mandó el modelo");
+    assertFalse(respuesta.contains("clave-del-servidor"), "ni la configurada");
+    assertFalse(quienSoy.contains("cualquier-cosa-789"));
+    assertFalse(quienSoy.contains("clave-del-servidor"));
+    String todo =
+        eventos.list.stream().map(e -> e.getFormattedMessage()).reduce("", String::concat);
+    assertFalse(todo.contains("cualquier-cosa-789"), "ni queda en el log");
+  }
+
+  @Test
+  @DisplayName("Sin modo admin local, llamar sin contraseña dice que no va en el chat y cómo activar el modo admin local")
+  void sinAdminLocalYSinContrasenaExplicaElModoLocal() {
+    sesion.cerrarSesion();
+    AuthTools conClave = new AuthTools(sesion, apiDirecta(), "clave-del-servidor");
+
+    for (String vacia : new String[] {null, "", "   "}) {
+      String respuesta = conClave.iniciarSesion("ADMIN", "admin", vacia);
+
+      assertTrue(respuesta.contains("no se escribe en el chat"), "le dice al modelo que no la pida");
+      assertTrue(respuesta.contains("DONATRACK_ADMIN_LOCAL=true"), "dice qué variable lo destraba");
+      assertTrue(respuesta.contains("\"env\""), "y en qué parte de la configuración va");
+      assertFalse(respuesta.contains("clave-del-servidor"));
+      assertFalse(sesion.estaAutenticado());
+    }
+  }
+
+  @Test
+  @DisplayName("Sin modo admin local ni contraseña, el aviso de deshabilitado ofrece el modo admin local")
+  void deshabilitadoOfreceElModoLocal() {
+    sesion.cerrarSesion();
+    AuthTools sinNada = new AuthTools(sesion, apiDirecta(), "");
+
+    String respuesta = sinNada.iniciarSesion("ADMIN", "admin", null);
+
+    assertTrue(respuesta.contains("deshabilitado"));
+    assertTrue(respuesta.contains("DONATRACK_ADMIN_LOCAL=true"));
+    assertFalse(sesion.estaAutenticado());
+  }
+
+  @Test
+  @DisplayName("quien_soy dice si el modo admin local está activo")
+  void quienSoyDiceElModoAdminLocal() {
+    sesion.cerrarSesion();
+    String conLocal = new AuthTools(sesion, apiDirecta(), "", "true").quienSoy();
+    String sinLocal = new AuthTools(sesion, apiDirecta(), "clave-del-servidor").quienSoy();
+
+    assertTrue(conLocal.contains("Modo admin local: activo"));
+    assertFalse(
+        conLocal.contains("deshabilitado"), "con el modo local, el ingreso de admin no lo está");
+    assertTrue(sinLocal.contains("Modo admin local: inactivo"));
+    assertTrue(sinLocal.contains("DONATRACK_ADMIN_LOCAL=true"), "y dice cómo activarlo");
+    assertTrue(sinLocal.contains("Conexión:"), "sigue diciendo por dónde van los pedidos");
+  }
+
+  @Test
+  @DisplayName("Solo «true» activa el modo admin local; un valor mal escrito lo deja apagado")
+  void soloTrueActivaElModoLocal() {
+    for (String apagado : new String[] {null, "", "false", "si", "1"}) {
+      sesion.cerrarSesion();
+      new AuthTools(sesion, apiDirecta(), "", apagado).iniciarSesion("ADMIN", "admin", null);
+      assertFalse(sesion.estaAutenticado(), "con «" + apagado + "» no entra");
+    }
+
+    sesion.cerrarSesion();
+    new AuthTools(sesion, apiDirecta(), "", " TRUE ").iniciarSesion("ADMIN", "admin", null);
+    assertTrue(sesion.esAdmin(), "sin importar mayúsculas ni espacios");
+  }
+
+  @Test
+  @DisplayName("El modo admin local viene apagado, y la tool le pide al modelo no pedir la contraseña")
+  void modoLocalApagadoPorDefectoYDescripcion() throws Exception {
+    String propiedades;
+    try (var in = getClass().getResourceAsStream("/application.properties")) {
+      propiedades = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+    assertTrue(propiedades.contains("donatrack.admin-local=${DONATRACK_ADMIN_LOCAL:false}"));
+
+    java.lang.reflect.Method iniciar =
+        AuthTools.class.getMethod("iniciarSesion", String.class, String.class, String.class);
+    String descripcion =
+        iniciar.getAnnotation(org.springframework.ai.tool.annotation.Tool.class).description();
+    String descripcionDelParametro =
+        iniciar.getParameters()[2]
+            .getAnnotation(org.springframework.ai.tool.annotation.ToolParam.class)
+            .description();
+
+    assertTrue(descripcion.contains("SIN contraseña"));
+    assertTrue(descripcion.contains("NUNCA pedirle la contraseña al usuario"));
+    assertTrue(descripcionDelParametro.contains("Nunca pedirle la contraseña al usuario"));
+    assertFalse(descripcionDelParametro.contains("pedírsela"), "ya no manda a pedirla");
+  }
+
   // ── Estado de donaciones e Incentivos ──────────────────────────────────────
 
   @Test
