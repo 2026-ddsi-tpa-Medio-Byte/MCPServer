@@ -687,8 +687,9 @@ public class DemoTools {
         4. `estado_del_sistema` — para mostrar de dónde se parte.
 
         **Los seis flujos, en el orden en que se encadenan**
-        1. `registrar_necesidad` — una entidad pide algo. Si ya había stock, se asigna en el acto
-           (una RECURRENTE, solo si el stock la cubre entera).
+        1. `registrar_necesidad` — una entidad pide algo. Si ya había stock, Logística lo aparta en
+           un paquete paq-solicitud-… (una RECURRENTE, solo si el stock la cubre entera), pero la
+           necesidad sigue en 0 hasta que se reporta la entrega de ese paquete.
         2. `registrar_donacion` — el flujo principal: toca Donaciones, Donadores y Logística.
         3. `reportar_entrega` — recién acá la necesidad se da por satisfecha y la donación queda
            ACEPTADA.

@@ -214,12 +214,15 @@ public class OperacionTools {
       name = "registrar_necesidad",
       description =
           "Registra lo que necesita una entidad. Valida contra Donaciones que el producto exista "
-              + "y le consulta el stock a Logística: si ya hay unidades disponibles, se asignan "
-              + "en el momento sin esperar una donación nueva, pero solo si Logística confirma la "
-              + "asignación. El tipo puede ser EXTRAORDINARIA (acepta que le asignen menos de lo "
-              + "pedido) o RECURRENTE (solo acepta que la cubran del todo: si el stock no alcanza "
-              + "para cubrirla entera, queda en 0). Devuelve un resumen ya redactado que dice si "
-              + "se le asignó stock: mostrarlo tal cual.")
+              + "y le consulta el stock a Logística: si ya hay unidades guardadas, Logística las "
+              + "aparta para esta necesidad en un paquete paq-solicitud-<uuid> (asignación "
+              + "ASIGNADA, pendiente de entrega), sin esperar una donación nueva. La necesidad "
+              + "nace igual con 0 cubierto: suma recién cuando se reporta la entrega de ese "
+              + "paquete con 'reportar_entrega', como con cualquier donación. Que quede en 0 con "
+              + "stock apartado es la regla, no un error. El tipo puede ser EXTRAORDINARIA "
+              + "(acepta que le aparten menos de lo pedido) o RECURRENTE (solo si el stock la "
+              + "cubre entera; si no alcanza, no se le aparta nada). Devuelve un resumen ya "
+              + "redactado que dice si se le apartó stock y en qué paquete: mostrarlo tal cual.")
   public String registrarNecesidad(
       @ToolParam(description = "Número de la entidad que necesita") String entidadId,
       @ToolParam(description = "Número del producto que se necesita") String productoId,
@@ -231,7 +234,9 @@ public class OperacionTools {
     String producto = productoId.trim();
     return conRelato(
         () -> Panorama.deNecesidad(api, producto),
-        // Después se relee la necesidad creada: es lo único que dice si se le asignó stock.
+        // Después se relee la necesidad creada, para mostrar cuánto tiene cubierto, y se buscan
+        // las asignaciones que Logística armó para ella: lo cubierto no dice si se le apartó
+        // stock, porque suma recién con la entrega.
         creada -> Panorama.despuesDeNecesidad(api, producto, Panorama.texto(creada, "id")),
         () ->
             api.postDonadores(
@@ -481,7 +486,9 @@ public class OperacionTools {
       @ToolParam(
               required = false,
               description =
-                  "Código del paquete, por ejemplo paq-12. Es el único dato que usa Logística.")
+                  "Código del paquete, por ejemplo paq-12, o paq-solicitud-<uuid> para el stock "
+                      + "que Logística apartó al crear una necesidad. Es el único dato que usa "
+                      + "Logística.")
           String paqueteId,
       @ToolParam(
               required = false,

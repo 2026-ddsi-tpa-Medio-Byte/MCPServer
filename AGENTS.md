@@ -115,6 +115,17 @@ endpoint contesta 404 si el módulo no lo implementó (no es una falla) y, sin `
 503 con texto (Donadores) o 200 con `eventosHabilitados: false` (Donaciones): las dos formas se
 informan como «no tiene configurado RabbitMQ».
 
+## El relato de registrar una necesidad
+
+Desde noviembre de 2026 Donadores **no suma** a la necesidad cuando Logística le aparta stock al
+crearla: nace en 0 y sube recién cuando se entrega el paquete `paq-solicitud-…`. Por eso el relato
+**no mira `cantidadActual`** para saber si se le asignó stock (daría siempre 0 y culparía a
+Logística): busca en `GET /api/asignaciones?estado=ASIGNADA&necesidadid=<id>` las de origen
+`SOLICITUD_DONADORES` (se vuelve a filtrar por necesidad de este lado) y compara el stock antes y
+después. Dice qué paquete armó Logística, cuánto bajó el stock y que la necesidad sigue en 0 hasta
+la entrega, que es la regla. Si esa consulta no contesta, la baja del stock se cuenta como indicio,
+no como asignación confirmada.
+
 ## Probarlo sin Claude Desktop
 
 Empaquetar y hablarle el protocolo directamente:
@@ -133,4 +144,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-162 tests, 0 fallos.
+166 tests, 0 fallos.

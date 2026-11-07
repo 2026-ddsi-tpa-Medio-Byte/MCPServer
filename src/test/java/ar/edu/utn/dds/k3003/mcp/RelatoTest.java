@@ -419,6 +419,7 @@ class RelatoTest {
     esperarStock("3", 5, 5);
     esperarAltaDeNecesidad("RECURRENTE");
     esperarNecesidadGuardada(0, "RECURRENTE");
+    esperarAsignacionesDeLaNecesidad("[]");
 
     String relato =
         operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "recurrente");
@@ -426,6 +427,7 @@ class RelatoTest {
     assertFalse(
         relato.contains("No había nada guardado"), "había 5 unidades: decir lo contrario es mentir");
     assertTrue(relato.contains("Había 5 unidades guardadas"), "lo que no cambió también se cuenta");
+    assertTrue(relato.contains("no apartó nada"), "Logística contestó sin ninguna asignación");
     assertTrue(relato.contains("0/20"), "la necesidad quedó en cero");
     assertTrue(relato.contains("RECURRENTE solo se asigna si el stock la cubre entera"));
     assertTrue(
@@ -440,6 +442,7 @@ class RelatoTest {
     esperarStock("3", 5, 5);
     esperarAltaDeNecesidad("EXTRAORDINARIA");
     esperarNecesidadGuardada(0, "EXTRAORDINARIA");
+    esperarAsignacionesDeLaNecesidad("[]");
 
     String relato =
         operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "extraordinaria");
@@ -458,6 +461,7 @@ class RelatoTest {
     esperarStock("3", 0, 0);
     esperarAltaDeNecesidad("RECURRENTE");
     esperarNecesidadGuardada(0, "RECURRENTE");
+    esperarAsignacionesDeLaNecesidad("[]");
 
     String relato =
         operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "recurrente");
@@ -465,25 +469,111 @@ class RelatoTest {
     assertTrue(relato.contains("No había nada guardado"));
     assertTrue(relato.contains("0/20"));
     assertFalse(relato.contains("causas posibles"), "sin stock no hay nada que explicar");
+    assertFalse(relato.contains("Sin respuesta"), "todos los módulos contestaron");
+    assertTrue(
+        relato.contains("Siguiente paso sugerido: `registrar_donacion`"),
+        "sin nada apartado, lo que la puede cubrir es una donación");
   }
 
   @Test
-  @DisplayName("Si se asignó stock al crearla, lo cubierto se lee de la necesidad, no del alta")
-  void necesidadCubiertaConStock() {
+  @DisplayName("Con stock, el relato cuenta lo que apartó Logística y que la necesidad sigue en 0 hasta la entrega")
+  void necesidadConStockApartado() {
     esperarNecesidades("3", "[]");
     esperarStock("3", 30, 10);
-    // El alta devuelve el DTO de cátedra, sin cantidadActual: de ahí solo saldría un 0.
     esperarAltaDeNecesidad("RECURRENTE");
-    esperarNecesidadGuardada(20, "RECURRENTE");
+    // Donadores ya no suma al asignar: la necesidad nace en 0 aunque Logística aparte el stock.
+    esperarNecesidadGuardada(0, "RECURRENTE");
+    esperarAsignacionesDeLaNecesidad(asignacionDeSolicitud("paq-solicitud-abc", 20));
 
     String relato =
         operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "recurrente");
 
-    assertTrue(relato.contains("20/20"), "lo cubierto sale de releer la necesidad");
-    assertTrue(relato.contains("30 → 10"));
-    assertTrue(relato.contains("Logística confirmó la asignación"));
-    // Con espacio adelante: «20/20» contiene «0/20».
-    assertFalse(relato.contains(" 0/20"), "el 0 del alta no es lo que quedó guardado");
+    assertTrue(relato.contains("apartó 20 unidades del stock para esta necesidad"), relato);
+    assertTrue(
+        relato.contains("paq-solicitud-abc"), "es el paquete que hay que entregar para que sume");
+    assertTrue(relato.contains("bajó de 30 a 10"), "lo que bajó el stock también se cuenta");
+    assertTrue(
+        relato.contains("sigue en 0/20 hasta que se entregue ese paquete"),
+        "el 0 con stock apartado es lo que se malinterpreta: hay que decir cuándo cambia");
+    assertTrue(relato.contains("Es la regla, no un error"));
+    assertFalse(
+        relato.contains("Logística no haya confirmado"),
+        "Logística sí apartó el stock: culparla sería mandar a buscar un problema que no existe");
+    assertFalse(relato.contains("no apartó nada"));
+    assertFalse(relato.contains("No había nada guardado"));
+    assertTrue(
+        relato.contains("Siguiente paso sugerido: `reportar_entrega`"),
+        "lo que sigue es entregar lo apartado, no esperar una donación");
+  }
+
+  @Test
+  @DisplayName("Si no se pudo leer el stock, el relato cuenta lo apartado sin inventar cuánto bajó")
+  void necesidadApartadaSinLeerElStock() {
+    esperarNecesidades("3", "[]");
+    servidor
+        .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/stock/3"))
+        .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+    esperarAltaDeNecesidad("EXTRAORDINARIA");
+    esperarNecesidadGuardada(0, "EXTRAORDINARIA");
+    esperarAsignacionesDeLaNecesidad(asignacionDeSolicitud("paq-solicitud-abc", 12));
+
+    String relato =
+        operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "extraordinaria");
+
+    assertTrue(relato.contains("apartó 12 unidades"), "la asignación sí se vio");
+    assertTrue(relato.contains("no se muestra cuánto bajó"));
+    assertFalse(relato.contains("bajó de"), "no se vio el stock: no se dice de cuánto a cuánto");
+    assertTrue(relato.contains("sigue en 0/20"));
+    assertTrue(relato.contains("Sin respuesta de: Logística"));
+  }
+
+  @Test
+  @DisplayName("Si Logística no contesta las asignaciones, el relato no afirma ni que apartó ni que no")
+  void necesidadSinVerLasAsignaciones() {
+    esperarNecesidades("3", "[]");
+    esperarStock("3", 30, 10);
+    esperarAltaDeNecesidad("EXTRAORDINARIA");
+    esperarNecesidadGuardada(0, "EXTRAORDINARIA");
+    servidor
+        .expect(
+            ExpectedCount.manyTimes(),
+            requestTo(LOGISTICA + "/api/asignaciones?estado=ASIGNADA&necesidadid=9"))
+        .andRespond(
+            withStatus(HttpStatus.BAD_GATEWAY)
+                .body("<html>502 Bad Gateway</html>")
+                .contentType(MediaType.TEXT_HTML));
+
+    String relato =
+        operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "extraordinaria");
+
+    assertTrue(relato.contains("30 → 10"), "lo que sí se vio se cuenta");
+    assertTrue(
+        relato.contains("no se puede confirmar"),
+        "que el stock baje no prueba que se haya apartado para esta necesidad");
+    assertFalse(relato.contains("apartó 20"), "sin ver la asignación no se afirma que la hubo");
+    assertFalse(relato.contains("no apartó nada"), "ni que no la hubo");
+    assertFalse(relato.contains("Logística no haya confirmado"));
+    assertTrue(relato.contains("Sin respuesta de: Logística"));
+  }
+
+  @Test
+  @DisplayName("Lo que Logística apartó para otra necesidad no se le atribuye a la recién creada")
+  void asignacionDeOtraNecesidadNoSeAtribuye() {
+    esperarNecesidades("3", "[]");
+    esperarStock("3", 5, 5);
+    esperarAltaDeNecesidad("EXTRAORDINARIA");
+    esperarNecesidadGuardada(0, "EXTRAORDINARIA");
+    // Como si Logística ignorara el filtro y devolviera también lo de la necesidad 7.
+    esperarAsignacionesDeLaNecesidad(
+        """
+        [{"paqueteid":"paq-solicitud-otra","necesidadid":"7","estado":"ASIGNADA",
+          "origen":"SOLICITUD_DONADORES","donacionid":null,"cantidad":5}]""");
+
+    String relato =
+        operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "extraordinaria");
+
+    assertFalse(relato.contains("paq-solicitud-otra"), "ese paquete es de otra necesidad");
+    assertTrue(relato.contains("no apartó nada"));
   }
 
   @Test
@@ -492,6 +582,14 @@ class RelatoTest {
     esperarNecesidades("3", "[]");
     servidor
         .expect(ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/stock/3"))
+        .andRespond(
+            withStatus(HttpStatus.BAD_GATEWAY)
+                .body("<html>502 Bad Gateway</html>")
+                .contentType(MediaType.TEXT_HTML));
+    servidor
+        .expect(
+            ExpectedCount.manyTimes(),
+            requestTo(LOGISTICA + "/api/asignaciones?estado=ASIGNADA&necesidadid=9"))
         .andRespond(
             withStatus(HttpStatus.BAD_GATEWAY)
                 .body("<html>502 Bad Gateway</html>")
@@ -506,6 +604,7 @@ class RelatoTest {
         relato.contains("No había nada guardado"),
         "un 502 es que Logística no anda, no que el producto no tenga stock");
     assertTrue(relato.contains("no se pudo leer el stock"));
+    assertFalse(relato.contains("no apartó nada"), "tampoco se vio qué apartó");
     assertTrue(relato.contains("Sin respuesta de: Logística"));
   }
 
@@ -513,18 +612,21 @@ class RelatoTest {
   @DisplayName("Si no se pudo releer la necesidad, el relato no inventa cuánto quedó cubierto")
   void necesidadQueNoSePudoReleer() {
     esperarNecesidades("3", "[]");
-    esperarStock("3", 5, 5);
+    esperarStock("3", 30, 10);
     esperarAltaDeNecesidad("EXTRAORDINARIA");
     servidor
         .expect(ExpectedCount.manyTimes(), requestTo(DONADORES + "/necesidades/9"))
         .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+    esperarAsignacionesDeLaNecesidad(asignacionDeSolicitud("paq-solicitud-abc", 20));
 
     String relato =
         operaciones.registrarNecesidad("1", "3", 20, "Arroz para el comedor", 8, "extraordinaria");
 
     assertTrue(relato.contains("nº 9"), "la necesidad se creó igual: eso no se pierde");
+    assertTrue(
+        relato.contains("apartó 20 unidades"), "lo apartado se ve en Logística, no en Donadores");
     assertFalse(relato.contains("0/20"), "no se vio cuánto quedó cubierto");
-    assertTrue(relato.contains("no se puede afirmar si se le asignaron"));
+    assertTrue(relato.contains("No se pudo releer la necesidad"));
     assertTrue(relato.contains("Sin respuesta de: Donadores"));
   }
 
@@ -986,6 +1088,31 @@ class RelatoTest {
                     + tipo
                     + "\"}",
                 MediaType.APPLICATION_JSON));
+  }
+
+  /**
+   * Las asignaciones pendientes que Logística tiene para la necesidad 9. Es lo que dice si se le
+   * apartó stock al crearla: la necesidad releída nace en 0 de todas formas.
+   */
+  private void esperarAsignacionesDeLaNecesidad(String json) {
+    servidor
+        .expect(
+            ExpectedCount.manyTimes(),
+            requestTo(LOGISTICA + "/api/asignaciones?estado=ASIGNADA&necesidadid=9"))
+        .andRespond(withSuccess(json, MediaType.APPLICATION_JSON));
+  }
+
+  /**
+   * Lo que arma Logística cuando Donadores le pide stock para la necesidad 9, con los campos en
+   * minúscula como los devuelve y sin donación, porque sale del stock.
+   */
+  private static String asignacionDeSolicitud(String paquete, int cantidad) {
+    return "[{\"asignacionid\":\"a1\",\"paqueteid\":\""
+        + paquete
+        + "\",\"necesidadid\":\"9\",\"estado\":\"ASIGNADA\",\"origen\":\"SOLICITUD_DONADORES\","
+        + "\"donacionid\":null,\"productoid\":\"3\",\"cantidad\":"
+        + cantidad
+        + "}]";
   }
 
   /** El stock se consulta dos veces: antes y después. Por eso van dos respuestas. */

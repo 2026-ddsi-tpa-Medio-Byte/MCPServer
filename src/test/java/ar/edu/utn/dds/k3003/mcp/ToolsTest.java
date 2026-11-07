@@ -336,6 +336,29 @@ class ToolsTest {
   }
 
   @Test
+  @DisplayName("La descripción de registrar_necesidad dice que lo apartado del stock suma recién con la entrega")
+  void descripcionDeLaNecesidad() throws Exception {
+    String descripcion =
+        OperacionTools.class
+            .getMethod(
+                "registrarNecesidad",
+                String.class,
+                String.class,
+                int.class,
+                String.class,
+                int.class,
+                String.class)
+            .getAnnotation(org.springframework.ai.tool.annotation.Tool.class)
+            .description();
+
+    assertTrue(descripcion.contains("paq-solicitud"), "tiene que decir dónde queda lo apartado");
+    assertTrue(descripcion.contains("reportar_entrega"), "y qué hace falta para que sume");
+    assertFalse(
+        descripcion.contains("se asignan en el momento"),
+        "la idea vieja: la necesidad ya no nace con lo asignado sumado");
+  }
+
+  @Test
   @DisplayName("El guion de la demo pone la queja después de la entrega y explica cómo llegar a BANEADO")
   void guionConQuejaSobreEntregada() {
     String guion = new DemoTools(null, sesion).guionDemo();

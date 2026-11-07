@@ -5,6 +5,7 @@ import static ar.edu.utn.dds.k3003.mcp.Panorama.numero;
 import static ar.edu.utn.dds.k3003.mcp.Panorama.texto;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -369,70 +370,147 @@ class Narrador {
 
     sb.append(
         "\n> Una necesidad EXTRAORDINARIA acepta que le asignen menos de lo que pide; una "
-            + "RECURRENTE solo acepta que la cubran del todo. Lo que se toma del stock al crearla "
-            + "se registra solo si Logística confirma la asignación.\n");
-    sb.append(pie(antes, despues, "registrar_donacion"));
+            + "RECURRENTE solo acepta que la cubran del todo. Lo que Logística aparta del stock al "
+            + "crearla no suma todavía: la necesidad se satisface cuando se entrega el paquete, no "
+            + "cuando se asigna, igual que con una donación.\n");
+    // Si Logística apartó stock, lo que sigue es entregarlo: recién ahí la necesidad suma.
+    boolean aparto =
+        despues.asignacionesDeSolicitud != null && !despues.asignacionesDeSolicitud.isEmpty();
+    sb.append(pie(antes, despues, aparto ? "reportar_entrega" : "registrar_donacion"));
     return sb.toString();
   }
 
   /**
-   * Si a la necesidad nueva se le asignó stock que ya estaba guardado, y si no, por qué.
+   * Si Logística le apartó a la necesidad nueva stock que ya estaba guardado, y si no, por qué.
    *
-   * <p>El dato es lo cubierto, no el stock: Donadores registra lo asignado solo cuando Logística lo
-   * confirma. Que el stock no haya bajado no quiere decir que no hubiera nada guardado, que es lo
-   * que se decía antes: con stock disponible, una RECURRENTE que no queda cubierta entera no se
-   * asigna, y si Logística no confirma la necesidad también se crea en 0.
+   * <p>El dato es la asignación que armó Logística, no lo cubierto: la necesidad se satisface al
+   * entregar, así que Donadores la deja en 0 aunque Logística haya apartado unidades. Mirar {@code
+   * cantidadActual}, como se hacía antes, llevaba a decir «no se le asignó nada» y a culpar a
+   * Logística justo cuando sí había apartado el stock. El stock acompaña: muestra cuánto bajó, pero
+   * solo no alcanza para atribuirle la baja a esta necesidad.
    */
   private static String stockAlCrear(JsonNode creada, Panorama antes, Panorama despues) {
+    List<JsonNode> apartadas = despues.asignacionesDeSolicitud;
+    if (apartadas != null && !apartadas.isEmpty()) {
+      return apartado(apartadas, antes, despues);
+    }
+
     String stock =
         antes.stock == null || despues.stock == null
             ? ""
             : "stock del producto: " + antes.stock + " → " + despues.stock + ". ";
-    JsonNode guardada = despues.necesidad;
+    boolean asignacionesVistas = apartadas != null;
 
-    if (guardada == null) {
-      if (antes.stock == null) {
-        return "no se pudo leer el stock ni releer la necesidad, así que no se ve si se le asignó "
-            + "algo.";
-      }
-      if (antes.stock == 0) {
-        return stock + "No había nada guardado, así que la necesidad queda esperando una donación.";
-      }
-      return stock
-          + "Había unidades guardadas, pero no se pudo releer la necesidad, así que no se puede "
-          + "afirmar si se le asignaron.";
-    }
-
-    int cubierta = numero(guardada, "cantidadActual");
-    int objetivo = numero(guardada, "cantidadObjetivo");
-    if (cubierta > 0) {
-      return stock
-          + "Había donaciones guardadas: Logística confirmó la asignación y la necesidad arrancó con "
-          + cubierta
-          + " unidades cubiertas, sin esperar una donación nueva.";
-    }
     if (antes.stock == null) {
-      return "no se pudo leer el stock, así que no se ve si había reservas. La necesidad quedó en 0/"
-          + objetivo
-          + ".";
+      return asignacionesVistas
+          ? "no se pudo leer el stock, así que no se ve si había unidades guardadas; lo que sí se "
+              + "ve es que Logística no apartó nada para esta necesidad: no armó ningún paquete "
+              + "paq-solicitud-… para ella."
+          : "no se pudo leer el stock ni las asignaciones de Logística, así que no se ve si se le "
+              + "apartó algo.";
     }
     if (antes.stock == 0) {
       return stock + "No había nada guardado, así que la necesidad queda esperando una donación.";
     }
+    if (!asignacionesVistas) {
+      // Que el stock baje es un indicio, no una prueba: puede haberlo movido otra operación.
+      if (despues.stock != null && despues.stock < antes.stock) {
+        return stock
+            + "El stock bajó, pero no se pudieron consultar las asignaciones de Logística, así que "
+            + "no se puede confirmar que esas unidades se hayan apartado para esta necesidad. Se "
+            + "puede mirar con `consultar_asignaciones` (necesidadId "
+            + texto(creada, "id")
+            + ").";
+      }
+      return stock
+          + "Había "
+          + antes.stock
+          + " unidades guardadas, pero no se pudieron consultar las asignaciones de Logística, "
+          + "así que no se puede afirmar si se le apartó algo.";
+    }
+
+    // Tipo y objetivo salen del alta si no se pudo releer la necesidad: no cambian al guardarla.
+    JsonNode guardada = despues.necesidad;
+    JsonNode datos = guardada != null ? guardada : creada;
+    String tipo = texto(datos, "tipo").isBlank() ? texto(creada, "tipo") : texto(datos, "tipo");
+    int objetivo = numero(datos, "cantidadObjetivo");
     return stock
         + "Había "
         + antes.stock
-        + " unidades guardadas, pero la necesidad quedó en 0/"
-        + objetivo
-        + ": no se le asignó nada. "
-        + causasSinAsignar(
-            texto(guardada, "tipo").isBlank() ? texto(creada, "tipo") : texto(guardada, "tipo"),
-            antes.stock,
-            objetivo);
+        + " unidades guardadas, pero Logística no apartó nada para esta necesidad: no armó "
+        + "ningún paquete paq-solicitud-… para ella. "
+        + causasSinAsignar(tipo, antes.stock, objetivo);
   }
 
   /**
-   * Por qué una necesidad con stock disponible pudo quedar en 0.
+   * Logística apartó stock para la necesidad nueva: qué paquete armó, cuánto bajó el stock y por
+   * qué la necesidad sigue sin sumar.
+   *
+   * <p>Lo último es lo que más se malinterpreta, así que se dice explícito: una necesidad en 0 con
+   * stock apartado parece una falla y es la regla. Si no se pudo releer la necesidad no se dice en
+   * cuánto quedó, solo cuándo va a sumar.
+   */
+  private static String apartado(List<JsonNode> apartadas, Panorama antes, Panorama despues) {
+    int unidades = 0;
+    List<String> paquetes = new ArrayList<>();
+    for (JsonNode asignacion : apartadas) {
+      unidades += numero(asignacion, "cantidad");
+      paquetes.add(Panorama.alguno(asignacion, "paqueteid", "paqueteID"));
+    }
+    String cuales = String.join(", ", paquetes);
+    String relato =
+        "apartó "
+            + (unidades > 0 ? unidades + " unidades" : "unidades")
+            + " del stock para esta necesidad, en "
+            + (paquetes.size() == 1 ? "la asignación " : "las asignaciones ")
+            + cuales
+            + " (ASIGNADA: pendiente de entrega). "
+            + bajaDelStock(antes, despues);
+
+    String entrega = "`reportar_entrega` con " + cuales;
+    JsonNode guardada = despues.necesidad;
+    if (guardada == null) {
+      return relato
+          + "No se pudo releer la necesidad para mostrar en cuánto quedó; lo apartado suma recién "
+          + "cuando se reporte la entrega ("
+          + entrega
+          + ").";
+    }
+    int cubierta = numero(guardada, "cantidadActual");
+    String deObjetivo = "/" + numero(guardada, "cantidadObjetivo");
+    if (cubierta > 0) {
+      // Se cuenta lo que se ve aunque no sea lo esperado: decir «sigue en 0» sería mentir.
+      return relato
+          + "Donadores ya la muestra con "
+          + cubierta
+          + deObjetivo
+          + " cubiertas aunque el paquete todavía no se entregó; lo apartado debería sumar recién "
+          + "con la entrega ("
+          + entrega
+          + ").";
+    }
+    return relato
+        + "La necesidad sigue en 0"
+        + deObjetivo
+        + " hasta que se entregue ese paquete: lo apartado suma recién cuando se reporte la "
+        + "entrega ("
+        + entrega
+        + "). Es la regla, no un error.";
+  }
+
+  /** Cuánto bajó el stock al apartar, o que no se pudo ver: no se completa con lo apartado. */
+  private static String bajaDelStock(Panorama antes, Panorama despues) {
+    if (antes.stock == null || despues.stock == null) {
+      return "No se pudo leer el stock antes o después de crearla, así que no se muestra cuánto "
+          + "bajó. ";
+    }
+    return despues.stock < antes.stock
+        ? "El stock del producto bajó de " + antes.stock + " a " + despues.stock + ". "
+        : "Stock del producto: " + antes.stock + " → " + despues.stock + ". ";
+  }
+
+  /**
+   * Por qué una necesidad con stock disponible pudo quedar sin nada apartado.
    *
    * <p>No se elige una sola causa: desde afuera no se ve si Donadores le pidió la asignación a
    * Logística ni qué le contestó. Lo que sí se puede es descartar la regla de las RECURRENTE cuando
@@ -440,8 +518,8 @@ class Narrador {
    */
   private static String causasSinAsignar(String tipo, int stock, int objetivo) {
     String logistica =
-        "que Logística no haya confirmado la asignación o no haya informado el stock a tiempo: en "
-            + "ese caso Donadores crea la necesidad en 0 para no contar unidades que nadie apartó";
+        "que Logística no haya confirmado la asignación o no le haya informado el stock a tiempo a "
+            + "Donadores: en ese caso la necesidad se crea igual, sin nada apartado";
     String regla =
         "una RECURRENTE solo se asigna si el stock la cubre entera, y si no ni se le pide nada a "
             + "Logística";

@@ -41,6 +41,18 @@ class Panorama {
   JsonNode necesidadAsignada;
 
   JsonNode entidadAsignada;
+
+  /**
+   * Lo que Logística apartó del stock para una necesidad recién creada: sus asignaciones
+   * pendientes de origen {@code SOLICITUD_DONADORES} ({@code paq-solicitud-…}). Solo tras crear una
+   * necesidad.
+   *
+   * <p>Vacía es «Logística contestó y no apartó nada»; {@code null}, «no se pudo ver». Son cosas
+   * distintas y el relato no puede confundirlas: la primera explica por qué la necesidad no tiene
+   * nada asignado, la segunda no explica nada.
+   */
+  List<JsonNode> asignacionesDeSolicitud;
+
   JsonNode insignias;
   JsonNode mision;
   JsonNode quejas;
@@ -125,12 +137,15 @@ class Panorama {
   }
 
   /**
-   * Lo mismo, más la necesidad recién creada tal como quedó guardada.
+   * Lo mismo, más la necesidad recién creada tal como quedó guardada y lo que Logística apartó
+   * para ella.
    *
-   * <p>La respuesta del alta es el DTO de cátedra, que no trae lo cubierto ({@code
-   * cantidadActual}). Sin volver a pedirla, el relato no sabría si se le asignó stock al crearla y
-   * mostraría un 0 que nadie vio. Que el stock baje tampoco alcanza: con stock disponible, una
-   * RECURRENTE que no queda cubierta entera no se asigna, y si Logística no confirma tampoco.
+   * <p>La necesidad se relee porque la respuesta del alta es el DTO de cátedra, que no trae lo
+   * cubierto ({@code cantidadActual}): sin releerla, el relato mostraría un 0 que nadie vio. Pero
+   * lo cubierto ya no dice si se le asignó stock: la necesidad se satisface al entregar, así que
+   * nace en 0 aunque Logística haya apartado unidades. Eso se ve en las asignaciones de Logística.
+   * Las cuatro lecturas van a la vez: así la foto tarda lo que la más lenta, a lo sumo el plazo de
+   * una consulta, y no suma esperas hacia el corte de 60 segundos de Claude.
    */
   static Panorama despuesDeNecesidad(DonaTrackApi api, String productoId, String necesidadId) {
     Panorama p = new Panorama(api);
@@ -142,6 +157,12 @@ class Panorama {
           if (!necesidadId.isBlank()) {
             p.necesidad =
                 p.leer("Donadores", () -> api.getDonadores("/necesidades/" + necesidadId));
+          }
+        },
+        () -> {
+          // Sin número tampoco: sin filtro, Logística devolvería las de todas las necesidades.
+          if (!necesidadId.isBlank()) {
+            p.asignacionesDeSolicitud = p.leerAsignacionesDeSolicitud(necesidadId);
           }
         });
     return p;
@@ -266,6 +287,38 @@ class Panorama {
     if (!entidadId.isBlank()) {
       entidadAsignada = leer("Donadores", () -> api.getDonadores("/entidades/" + entidadId));
     }
+  }
+
+  /**
+   * Las asignaciones pendientes que Logística armó para una necesidad a pedido de Donadores, es
+   * decir sobre stock que ya estaba guardado.
+   *
+   * <p>Logística las crea antes de que Donadores conteste el alta (la solicitud es sincrónica), así
+   * que si la necesidad recibió stock, acá ya figura. Se filtra otra vez de este lado aunque se
+   * pida por necesidad: si Logística ignorara el parámetro, devolvería las de todas, y se le
+   * atribuiría a la nueva lo apartado para otra. Los campos llegan en minúscula aunque el Swagger
+   * de Logística diga camelCase; se aceptan los dos.
+   */
+  private List<JsonNode> leerAsignacionesDeSolicitud(String necesidadId) {
+    JsonNode nodo =
+        leer(
+            "Logística",
+            () -> api.getLogistica("/api/asignaciones?estado=ASIGNADA&necesidadid=" + necesidadId));
+    if (nodo == null || !nodo.isArray()) {
+      return null;
+    }
+    List<JsonNode> propias = new ArrayList<>();
+    for (JsonNode asignacion : nodo) {
+      boolean deEstaNecesidad =
+          necesidadId.equals(alguno(asignacion, "necesidadid", "necesidadID"));
+      boolean deSolicitud =
+          "SOLICITUD_DONADORES".equals(alguno(asignacion, "origen"))
+              || alguno(asignacion, "paqueteid", "paqueteID").startsWith("paq-solicitud-");
+      if (deEstaNecesidad && deSolicitud) {
+        propias.add(asignacion);
+      }
+    }
+    return propias;
   }
 
   /** Sin número no se pregunta: pedir {@code /donaciones/} traería el listado entero. */
