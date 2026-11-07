@@ -159,7 +159,16 @@ class Narrador {
 
   // ── Entrega ────────────────────────────────────────────────────────────────
 
+  /**
+   * La entrega de un paquete: el de una donación, o el de stock apartado al crear una necesidad
+   * ({@code paq-solicitud-…}).
+   *
+   * <p>Los dos se cuentan distinto porque en el segundo no hay donación: no hay ninguna que pase a
+   * ACEPTADA ni donador que procesar después, y decir «donación nº —» o que Donaciones no contestó
+   * sería inventar una falla donde no la hay.
+   */
   static String entrega(Panorama antes, Panorama despues, String traza) {
+    boolean deSolicitud = antes.paqueteDeSolicitud || despues.paqueteDeSolicitud;
     StringBuilder sb = new StringBuilder();
     sb.append(encabezado("Entrega reportada", traza, "Logística"));
 
@@ -168,28 +177,38 @@ class Narrador {
     JsonNode asignacion = antes.asignacion != null ? antes.asignacion : despues.asignacion;
     String estadoAntes =
         antes.asignacionPendiente ? "todavía no figuraba" : texto(antes.asignacion, "estado");
-    String origen = Panorama.alguno(asignacion, "origen");
-    sb.append(
-        linea(
-            "Logística",
-            "paquete "
-                + Panorama.alguno(asignacion, "paqueteID", "paqueteid")
-                + ", asignación "
-                + cambio(estadoAntes, texto(despues.asignacion, "estado"))
-                + (origen.isBlank()
-                    ? "."
-                    : ". Se había asignado por "
-                        + ("MATCHMAKING".equals(origen)
-                            ? "matchmaking, es decir al entrar la donación."
-                            : "una solicitud de Donadores, es decir sobre stock que ya estaba."))));
-    sb.append(
-        linea(
-            "Donaciones",
-            "donación nº "
-                + texto(antes.donacion, "id")
-                + ": "
-                + cambio(estadoDe(antes.donacion), estadoDe(despues.donacion))
-                + "."));
+    if (deSolicitud) {
+      sb.append(linea("Logística", paqueteDeSolicitudEntregado(asignacion, estadoAntes, despues)));
+      sb.append(
+          linea(
+              "Donaciones",
+              "no participa: el paquete salió de stock que ya estaba guardado, no de una "
+                  + "donación, así que no hay ninguna que pase a ACEPTADA."));
+    } else {
+      String origen = Panorama.alguno(asignacion, "origen");
+      sb.append(
+          linea(
+              "Logística",
+              "paquete "
+                  + Panorama.alguno(asignacion, "paqueteID", "paqueteid")
+                  + ", asignación "
+                  + cambio(estadoAntes, texto(despues.asignacion, "estado"))
+                  + (origen.isBlank()
+                      ? "."
+                      : ". Se había asignado por "
+                          + ("MATCHMAKING".equals(origen)
+                              ? "matchmaking, es decir al entrar la donación."
+                              : "una solicitud de Donadores, es decir sobre stock que ya "
+                                  + "estaba."))));
+      sb.append(
+          linea(
+              "Donaciones",
+              "donación nº "
+                  + texto(antes.donacion, "id")
+                  + ": "
+                  + cambio(estadoDe(antes.donacion), estadoDe(despues.donacion))
+                  + "."));
+    }
 
     if (antes.necesidad != null) {
       String progreso =
@@ -207,6 +226,11 @@ class Narrador {
       boolean completa =
           numero(despues.necesidad, "cantidadActual")
               >= numero(despues.necesidad, "cantidadObjetivo");
+      // Al crear la necesidad, lo apartado no sumó: se dice que suma ahora, y solo si se vio subir.
+      boolean subio =
+          despues.necesidad != null
+              && numero(despues.necesidad, "cantidadActual")
+                  > numero(antes.necesidad, "cantidadActual");
       sb.append(
           linea(
               "Donadores",
@@ -216,7 +240,10 @@ class Narrador {
                   + texto(antes.necesidad, "descripcion")
                   + "»: "
                   + progreso
-                  + (completa ? ". Quedó cubierta." : ". Todavía le falta.")));
+                  + (completa ? ". Quedó cubierta." : ". Todavía le falta.")
+                  + (deSolicitud && subio
+                      ? " Lo apartado del stock suma recién ahora, con la entrega, y una sola vez."
+                      : "")));
     } else if (despues.necesidad != null) {
       // No se supo a qué necesidad iba hasta después de entregar: se muestra cómo quedó, sin
       // inventar de dónde venía.
@@ -244,21 +271,62 @@ class Narrador {
 
     if (antes.stock != null && despues.stock != null) {
       int diferencia = despues.stock - antes.stock;
+      String explicacion;
+      if (deSolicitud) {
+        explicacion =
+            diferencia == 0
+                ? ". No cambia: esas unidades ya se habían descontado al apartarlas."
+                : ".";
+      } else {
+        explicacion = diferencia > 0 ? ". Lo que sobró de la entrega quedó guardado." : ".";
+      }
       sb.append(
           linea(
               "Logística",
-              "stock del producto: "
-                  + antes.stock
-                  + " → "
-                  + despues.stock
-                  + (diferencia > 0 ? ". Lo que sobró de la entrega quedó guardado." : ".")));
+              "stock del producto: " + antes.stock + " → " + despues.stock + explicacion));
     }
 
+    if (deSolicitud) {
+      sb.append(
+          "\n> Este es el momento en que lo apartado del stock se da por cumplido: al crear la "
+              + "necesidad quedó comprometido para ella, no entregado, y por eso recién ahora "
+              + "suma.\n");
+      // No hay donador que procesar en Incentivos: lo que sigue depende de si quedó cubierta.
+      boolean cubierta =
+          despues.necesidad != null
+              && numero(despues.necesidad, "cantidadActual")
+                  >= numero(despues.necesidad, "cantidadObjetivo");
+      boolean leFalta = despues.necesidad != null && !cubierta;
+      sb.append(pie(antes, despues, leFalta ? "registrar_donacion" : "estado_del_sistema"));
+      return sb.toString();
+    }
     sb.append(
         "\n> Este es el momento en que la donación se da por cumplida: hasta acá estaba "
             + "comprometida, no entregada.\n");
     sb.append(pie(antes, despues, "procesar_donador_en_incentivos"));
     return sb.toString();
+  }
+
+  /**
+   * La línea de Logística para un paquete de solicitud: qué se entregó y de dónde salió.
+   *
+   * <p>El código sale de la asignación, o del pedido si Logística no contestó: es un dato que ya
+   * se tiene. La cantidad solo se dice si se vio en la asignación.
+   */
+  private static String paqueteDeSolicitudEntregado(
+      JsonNode asignacion, String estadoAntes, Panorama despues) {
+    String paquete = Panorama.alguno(asignacion, "paqueteid", "paqueteID");
+    if (paquete.isBlank()) {
+      paquete = despues.paquete;
+    }
+    int cantidad = numero(asignacion, "cantidad");
+    return "paquete "
+        + paquete
+        + ", asignación "
+        + cambio(estadoAntes, texto(despues.asignacion, "estado"))
+        + ". Es stock que se apartó al crear la necesidad (origen SOLICITUD_DONADORES), sin "
+        + "donación asociada"
+        + (cantidad > 0 ? ": se entregaron " + cantidad + " unidades." : ".");
   }
 
   // ── Queja ──────────────────────────────────────────────────────────────────

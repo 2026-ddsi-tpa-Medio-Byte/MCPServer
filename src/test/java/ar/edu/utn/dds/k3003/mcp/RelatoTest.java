@@ -303,6 +303,12 @@ class RelatoTest {
     // Solo el paquete: la donación que el relato necesita se deduce de su nombre.
     String relato = operaciones.reportarEntrega("paq-12", null);
 
+    // El paquete de una donación se sigue contando como antes de que existieran los de solicitud:
+    // se pregunta por la donación (verify lo exige) y lo que sigue es procesar al donador.
+    servidor.verify();
+    assertFalse(relato.contains("sin donación asociada"), "este paquete sí sale de una donación");
+    assertFalse(relato.contains("no participa"));
+    assertTrue(relato.contains("Siguiente paso sugerido: `procesar_donador_en_incentivos`"));
     assertTrue(relato.contains("INGRESADA → ACEPTADA"), "la donación recién ahora se da por buena");
     assertTrue(relato.contains("0/20"), "hay que mostrar de dónde venía la necesidad");
     assertTrue(relato.contains("10/20"), "y cómo quedó");
@@ -360,6 +366,96 @@ class RelatoTest {
 
     servidor.verify();
     assertTrue(relato.contains("donación nº 12"), "sin deducirla del nombre, se le pregunta a Logística");
+  }
+
+  @Test
+  @DisplayName("La entrega de un paquete de solicitud cuenta lo apartado del stock, sin buscar una donación")
+  void relatoDeEntregaDeSolicitud() {
+    String paquete = "paq-solicitud-abc";
+    // Antes y después, con los campos en minúscula como los devuelve Logística y sin donación.
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/paquetes/" + paquete))
+        .andRespond(withSuccess(asignacionDeSolicitudEntregable("ASIGNADA"), MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/paquetes/" + paquete))
+        .andRespond(
+            withSuccess(asignacionDeSolicitudEntregable("COMPLETADA"), MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/necesidades/9"))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"9","descripcion":"Arroz para el comedor","cantidadObjetivo":20,
+                 "cantidadActual":0}""",
+                MediaType.APPLICATION_JSON));
+    servidor
+        .expect(requestTo(DONADORES + "/necesidades/9"))
+        .andRespond(
+            withSuccess(
+                """
+                {"id":"9","descripcion":"Arroz para el comedor","cantidadObjetivo":20,
+                 "cantidadActual":20}""",
+                MediaType.APPLICATION_JSON));
+    // El producto sale de la asignación: no hay donación de donde sacarlo.
+    esperarStock("3", 10, 10);
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
+        .andExpect(method(HttpMethod.POST))
+        .andExpect(
+            content()
+                .json(
+                    "{\"paqueteid\":\"" + paquete + "\"}",
+                    org.springframework.test.json.JsonCompareMode.STRICT))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    String relato = operaciones.reportarEntrega(paquete, null);
+
+    // Sin pedidos de más: un GET a /donaciones/solicitud-abc haría fallar la verificación.
+    servidor.verify();
+    assertTrue(relato.contains(paquete + ", asignación ASIGNADA → COMPLETADA"), relato);
+    assertTrue(relato.contains("origen SOLICITUD_DONADORES"));
+    assertTrue(relato.contains("sin donación asociada"));
+    assertTrue(relato.contains("se entregaron 20 unidades"), "la cantidad sale de la asignación");
+    assertTrue(relato.contains("0/20"), "de dónde venía la necesidad");
+    assertTrue(relato.contains("20/20"), "y cómo quedó");
+    assertTrue(
+        relato.contains("suma recién ahora, con la entrega, y una sola vez"),
+        "al crearla no sumó: es ahora cuando cuenta");
+    assertTrue(relato.contains("10 → 10"), "el stock se lee con el producto de la asignación");
+    assertTrue(relato.contains("ya se habían descontado al apartarlas"));
+    assertFalse(relato.contains("Sin respuesta"), "todos contestaron: no hay falla que avisar");
+    assertFalse(relato.contains("donación nº"), "no hay donación: no se muestra una vacía");
+    assertFalse(
+        relato.contains("procesar_donador_en_incentivos"), "no hay donador que procesar");
+    assertTrue(relato.contains("Siguiente paso sugerido: `estado_del_sistema`"));
+  }
+
+  @Test
+  @DisplayName("Si Logística no contesta la asignación de un paquete de solicitud, no se culpa a Donaciones")
+  void entregaDeSolicitudSinLeerLaAsignacion() {
+    String paquete = "paq-solicitud-abc";
+    servidor
+        .expect(
+            ExpectedCount.manyTimes(), requestTo(LOGISTICA + "/api/asignaciones/paquetes/" + paquete))
+        .andRespond(
+            withStatus(HttpStatus.BAD_GATEWAY)
+                .body("<html>502 Bad Gateway</html>")
+                .contentType(MediaType.TEXT_HTML));
+    servidor
+        .expect(requestTo(LOGISTICA + "/api/asignaciones/reportar-entrega"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    String relato = operaciones.reportarEntrega(paquete, null);
+
+    assertTrue(relato.contains("paquete " + paquete), "el código se conoce aunque Logística no conteste");
+    assertTrue(relato.contains("sin donación asociada"), "por el nombre ya se sabe que es de solicitud");
+    assertFalse(relato.contains("se entregaron"), "la cantidad no se vio: no se dice");
+    assertTrue(relato.contains("no se pudo identificar la necesidad del paquete"));
+    assertTrue(
+        relato.contains("Sin respuesta de: Logística. Esa parte"),
+        "el aviso nombra solo a quien no contestó, y Donaciones ni fue consultado");
+    assertFalse(relato.contains("donación nº"));
   }
 
   // ── Queja ──────────────────────────────────────────────────────────────────
@@ -1113,6 +1209,15 @@ class RelatoTest {
         + "\"donacionid\":null,\"productoid\":\"3\",\"cantidad\":"
         + cantidad
         + "}]";
+  }
+
+  /** El paquete que Logística armó al crear la necesidad 9, leído por su código para entregarlo. */
+  private static String asignacionDeSolicitudEntregable(String estado) {
+    return "{\"asignacionid\":\"a1\",\"paqueteid\":\"paq-solicitud-abc\",\"necesidadid\":\"9\","
+        + "\"estado\":\""
+        + estado
+        + "\",\"origen\":\"SOLICITUD_DONADORES\",\"donacionid\":null,\"productoid\":\"3\","
+        + "\"cantidad\":20}";
   }
 
   /** El stock se consulta dos veces: antes y después. Por eso van dos respuestas. */

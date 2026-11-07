@@ -527,8 +527,15 @@ public class OperacionTools {
         "Para reportar una entrega hace falta el código del paquete o el número de la donación.");
   }
 
-  /** El camino inverso, solo para el relato. Vacío si el paquete no sigue la convención. */
+  /**
+   * El camino inverso, solo para el relato. Vacío si el paquete no sigue la convención, y también
+   * si es de solicitud: {@code paq-solicitud-…} empieza igual pero no sale de una donación, y
+   * deducirle una hacía preguntar por {@code /donaciones/solicitud-…}, que no existe.
+   */
   private static String donacionDe(String paquete) {
+    if (Panorama.esPaqueteDeSolicitud(paquete)) {
+      return "";
+    }
     return paquete.startsWith("paq-") ? paquete.substring("paq-".length()) : "";
   }
 

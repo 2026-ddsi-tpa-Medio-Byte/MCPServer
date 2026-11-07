@@ -24,6 +24,12 @@ class Panorama {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
+  /**
+   * Así nombra Logística el paquete que arma cuando Donadores le pide stock al crear una necesidad.
+   * No sale de una donación: no hay número de donación que deducir del nombre.
+   */
+  static final String PREFIJO_SOLICITUD = "paq-solicitud-";
+
   private final DonaTrackApi api;
 
   /** Los módulos que no contestaron, para poder decirlo en vez de mentir que no hubo cambios. */
@@ -65,6 +71,19 @@ class Panorama {
    */
   boolean asignacionPendiente;
 
+  /**
+   * El paquete que se entrega salió de stock apartado al crear una necesidad, no de una donación.
+   * Solo en una entrega.
+   *
+   * <p>Cambia de dónde salen los datos: no hay donación que leer, así que el producto y la
+   * cantidad se toman de la asignación. Sin esto el relato preguntaba por una donación inexistente
+   * y decía que Donaciones no había contestado.
+   */
+  boolean paqueteDeSolicitud;
+
+  /** El código del paquete que se entrega, tal como se pidió: sirve aunque Logística no conteste. */
+  String paquete = "";
+
   private Panorama(DonaTrackApi api) {
     this.api = api;
   }
@@ -86,17 +105,29 @@ class Panorama {
    *
    * <p>La necesidad no se pide por parámetro porque quien reporta la entrega conoce el paquete, no
    * la necesidad: se la pregunta a Logística. La donación puede venir vacía si el paquete no sigue
-   * la convención de nombre; en ese caso también se la pregunta a Logística.
+   * la convención de nombre; en ese caso también se la pregunta a Logística. Un paquete de
+   * solicitud no tiene donación: el producto sale de la asignación.
    */
   static Panorama deEntrega(DonaTrackApi api, String paqueteId, String donacionId) {
     Panorama p = new Panorama(api);
+    p.paquete = paqueteId;
     p.aLaVez(() -> p.leerAsignacion(paqueteId), () -> p.leerDonacion(donacionId));
     if (donacionId.isBlank()) {
       p.leerDonacion(alguno(p.asignacion, "donacionID", "donacionid"));
     }
+    // Por el nombre, o, si el paquete no sigue la convención, porque la asignación dice que salió
+    // de una solicitud y no apunta a ninguna donación.
+    p.paqueteDeSolicitud =
+        esPaqueteDeSolicitud(paqueteId)
+            || ("SOLICITUD_DONADORES".equals(alguno(p.asignacion, "origen"))
+                && alguno(p.asignacion, "donacionID", "donacionid").isBlank());
     // La necesidad sale de la asignación y el producto de la donación: recién ahora se pueden pedir.
+    // El de una donación se sigue leyendo de la donación, como siempre.
     String necesidadId = alguno(p.asignacion, "necesidadID", "necesidadid");
-    String productoId = texto(p.donacion, "productoID");
+    String productoId =
+        p.paqueteDeSolicitud
+            ? alguno(p.asignacion, "productoid", "productoID")
+            : texto(p.donacion, "productoID");
     p.aLaVez(
         () -> {
           if (!necesidadId.isBlank()) {
@@ -313,7 +344,7 @@ class Panorama {
           necesidadId.equals(alguno(asignacion, "necesidadid", "necesidadID"));
       boolean deSolicitud =
           "SOLICITUD_DONADORES".equals(alguno(asignacion, "origen"))
-              || alguno(asignacion, "paqueteid", "paqueteID").startsWith("paq-solicitud-");
+              || esPaqueteDeSolicitud(alguno(asignacion, "paqueteid", "paqueteID"));
       if (deEstaNecesidad && deSolicitud) {
         propias.add(asignacion);
       }
@@ -372,6 +403,10 @@ class Panorama {
   }
 
   // ── Lectura cómoda de los nodos ────────────────────────────────────────────
+
+  static boolean esPaqueteDeSolicitud(String paqueteId) {
+    return paqueteId != null && paqueteId.startsWith(PREFIJO_SOLICITUD);
+  }
 
   static String texto(JsonNode nodo, String campo) {
     return nodo == null ? "" : nodo.path(campo).asText("");

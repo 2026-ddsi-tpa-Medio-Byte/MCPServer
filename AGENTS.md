@@ -126,6 +126,10 @@ después. Dice qué paquete armó Logística, cuánto bajó el stock y que la ne
 la entrega, que es la regla. Si esa consulta no contesta, la baja del stock se cuenta como indicio,
 no como asignación confirmada.
 
+Al entregar ese `paq-solicitud-…`, el relato de `reportar_entrega` **no busca donación** (no la
+tiene: `donacionDe` devuelve vacío y no se pide `/donaciones/solicitud-…`). Producto, cantidad y
+necesidad salen de la asignación, y es ahí donde la necesidad sube.
+
 ## Probarlo sin Claude Desktop
 
 Empaquetar y hablarle el protocolo directamente:
@@ -144,4 +148,4 @@ Enviando por stdin un `initialize` y después `tools/list` tiene que responder e
 mvn test
 ```
 
-166 tests, 0 fallos.
+168 tests, 0 fallos.
